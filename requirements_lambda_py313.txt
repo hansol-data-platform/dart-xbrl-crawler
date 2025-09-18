@@ -1,0 +1,33 @@
+# Python 3.13 호환 패키지 (pandas/numpy는 AWS 레이어 사용)
+
+# XBRL 파싱
+lxml>=5.0.0
+beautifulsoup4>=4.12.0
+
+# HTTP 요청 (DART API)
+requests>=2.32.0
+urllib3>=2.0.0
+
+# 환경 변수 관리
+python-dotenv>=1.0.0
+
+# 날짜/시간 처리
+python-dateutil>=2.9.0
+
+# 정규표현식 개선 (Python 3.13 호환)
+regex>=2024.7.24
+
+# JSON 처리 개선
+ujson>=5.10.0
+
+# 암호화/해시 (Python 3.13 호환)
+cryptography>=43.0.0
+
+# AWS SDK는 Lambda 런타임에 기본 포함
+# boto3, botocore 제외
+
+# pandas, numpy는 AWS 레이어 사용
+# AWSSDKPandas-Python313 레이어에 포함됨
+
+# DART FSS API 클라이언트
+dart-fss>=0.4.0
