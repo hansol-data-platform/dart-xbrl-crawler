@@ -47,6 +47,15 @@ def setup_lambda_environment():
         bool: 환경 설정 성공 여부
     """
     try:
+        # Lambda 환경에서 dart-fss 캐시 디렉토리를 /tmp로 설정
+        if os.environ.get('AWS_LAMBDA_FUNCTION_NAME'):
+            os.environ['DART_CACHE_DIR'] = '/tmp/.dart_cache'
+            os.environ['HOME'] = '/tmp'
+
+            # dart-fss가 사용할 수 있는 캐시 디렉토리 생성
+            os.makedirs('/tmp/.dart_cache', exist_ok=True)
+            os.makedirs('/tmp/.cache', exist_ok=True)
+
         # 필수 환경 변수 검증
         required_env_vars = [
             'DART_API_KEY',

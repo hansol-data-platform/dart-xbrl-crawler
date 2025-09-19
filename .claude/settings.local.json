@@ -6,7 +6,12 @@
       "Bash(del /Q batch_results*.csv)",
       "Bash(move lambda_handler.py lambda_function.py)",
       "Bash(git add:*)",
-      "Bash(git reset:*)"
+      "Bash(git reset:*)",
+      "mcp__serena__activate_project",
+      "mcp__serena__search_for_pattern",
+      "mcp__serena__find_file",
+      "mcp__serena__read_file",
+      "mcp__serena__replace_regex"
     ],
     "deny": [],
     "ask": []

@@ -90,7 +90,11 @@ class XBRLBatchProcessor:
         Returns:
             dict: 회사별 XBRL 파일 목록
         """
-        download_dir = Path("downloaded_xbrl")
+        # Lambda 환경에서는 /tmp 디렉토리 사용
+        if os.environ.get('AWS_LAMBDA_FUNCTION_NAME'):
+            download_dir = Path("/tmp/downloaded_xbrl")
+        else:
+            download_dir = Path("downloaded_xbrl")
         if not download_dir.exists():
             return {}
 

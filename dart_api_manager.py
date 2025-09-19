@@ -34,7 +34,11 @@ class DARTAPIManager:
         self.load_environment()
         self.base_url = "https://opendart.fss.or.kr/api"
         self.session = requests.Session()
-        self.download_dir = Path("downloaded_xbrl")
+        # Lambda 환경에서는 /tmp 디렉토리 사용
+        if os.environ.get('AWS_LAMBDA_FUNCTION_NAME'):
+            self.download_dir = Path("/tmp/downloaded_xbrl")
+        else:
+            self.download_dir = Path("downloaded_xbrl")
         self.download_dir.mkdir(exist_ok=True)
 
         # API 호출 제한 관리 (분당 1000회)
@@ -52,6 +56,12 @@ class DARTAPIManager:
     def load_corp_list(self, filename='corp_list.json'):
         """corp_list.json 파일 로드"""
         try:
+            # Lambda 환경에서는 절대 경로 사용
+            if not os.path.isabs(filename):
+                # 현재 스크립트 디렉토리 기준으로 파일 경로 설정
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                filename = os.path.join(current_dir, filename)
+
             with open(filename, 'r', encoding='utf-8') as f:
                 corp_list = json.load(f)
             print(f"회사 목록 로드 완료: {len(corp_list)}개 회사")

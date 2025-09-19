@@ -18,11 +18,20 @@ XBRL 파일을 처리하여 최종 CSV 파일을 생성하는 메인 처리 엔�
 
 import os
 import sys
+import json
 import pandas as pd
 from pathlib import Path
-from dart_fss.xbrl import get_xbrl_from_file
 import re
 from datetime import datetime
+
+# Lambda 환경에서 dart-fss 캐시 디렉토리 설정
+if os.environ.get('AWS_LAMBDA_FUNCTION_NAME'):
+    os.environ['DART_CACHE_DIR'] = '/tmp/.dart_cache'
+    os.environ['HOME'] = '/tmp'
+    os.makedirs('/tmp/.dart_cache', exist_ok=True)
+    os.makedirs('/tmp/.cache', exist_ok=True)
+
+from dart_fss.xbrl import get_xbrl_from_file
 
 
 class XBRLProcessor:
@@ -30,7 +39,25 @@ class XBRLProcessor:
 
     def __init__(self):
         """초기화"""
-        pass
+        self.corp_name_mapping = self._load_corp_name_mapping()
+    
+    def _load_corp_name_mapping(self):
+        """corp_list.json에서 회사코드-회사명 매핑 로드"""
+        try:
+            corp_list_path = 'corp_list.json'
+            if os.path.exists(corp_list_path):
+                with open(corp_list_path, 'r', encoding='utf-8') as f:
+                    corp_list = json.load(f)
+                # corp_code를 키로, name을 값으로 하는 딕셔너리 생성
+                mapping = {corp['corp_code']: corp['name'] for corp in corp_list}
+                print(f"회사명 매핑 로드 완료: {len(mapping)}개 회사")
+                return mapping
+            else:
+                print(f"경고: {corp_list_path} 파일을 찾을 수 없습니다. XBRL 파일의 회사명을 사용합니다.")
+                return {}
+        except Exception as e:
+            print(f"corp_list.json 로드 중 오류: {e}")
+            return {}
 
     def extract_metadata_from_xbrl(self, xbrl):
         """
@@ -55,16 +82,23 @@ class XBRLProcessor:
         except:
             metadata['corp_code'] = '00000000'
 
+        # 법인명 설정: corp_list.json 매핑 우선, 없으면 XBRL에서 추출
         try:
-            # 법인명 추출
-            entity_info = xbrl.get_entity_information()
-            corp_name_row = entity_info[entity_info.iloc[:, 0].str.contains('법인명', na=False)]
-            if not corp_name_row.empty:
-                metadata['corp_name'] = str(corp_name_row.iloc[0, 2]).strip()
+            # 먼저 corp_list.json 매핑에서 찾기
+            if metadata['corp_code'] in self.corp_name_mapping:
+                metadata['corp_name'] = self.corp_name_mapping[metadata['corp_code']]
+                print(f"corp_list.json에서 회사명 매핑: {metadata['corp_code']} → {metadata['corp_name']}")
             else:
-                metadata['corp_name'] = ''
+                # 매핑에 없으면 XBRL에서 추출
+                entity_info = xbrl.get_entity_information()
+                corp_name_row = entity_info[entity_info.iloc[:, 0].str.contains('법인명', na=False)]
+                if not corp_name_row.empty:
+                    metadata['corp_name'] = str(corp_name_row.iloc[0, 2]).strip()
+                    print(f"XBRL에서 회사명 추출: {metadata['corp_name']}")
+                else:
+                    metadata['corp_name'] = ''
         except Exception as e:
-            print(f"법인명 추출 중 오류: {e}")
+            print(f"법인명 설정 중 오류: {e}")
             metadata['corp_name'] = ''
 
         try:
@@ -505,23 +539,20 @@ class XBRLProcessor:
         return ""
 
     def generate_output_filename(self, xbrl_path, report_type, metadata, report_nm=""):
-        """출력 파일명 생성"""
+        """출력 파일명 생성 - FS_회사코드_YYYYMM.csv 형식"""
         corp_code = metadata.get('corp_code', '00000000')
 
         # 보고서명에서 년월 추출 시도
         period_from_report = self.extract_period_from_report_name(report_nm)
 
         if period_from_report:
-            # 새로운 파일명 형태: (BS/CIS)_회사코드_년월.csv
-            return f"{report_type}_{corp_code}_{period_from_report}.csv"
+            # FS_회사코드_YYYYMM.csv 형식
+            return f"FS_{corp_code}_{period_from_report}.csv"
         else:
-            # 기존 파일명 형태 (fallback)
-            base_name = Path(xbrl_path).stem
-            corp_name = metadata.get('corp_name', 'unknown')
-            yyyy = metadata.get('yyyy', 'unknown')
-            month = metadata.get('month', 'unknown')
-            report_name = '연결재무상태표' if report_type == 'BS' else '연결손익계산서'
-            return f"{base_name}_{corp_name}_{yyyy}_{month}_{report_name}_피벗포맷_메타데이터포함.csv"
+            # fallback: 메타데이터에서 년월 정보 조합
+            yyyy = metadata.get('yyyy', '0000')
+            month = metadata.get('month', '00')
+            return f"FS_{corp_code}_{yyyy}{month}.csv"
 
     def save_to_csv(self, df, output_path):
         """DataFrame을 UTF-8-sig CSV로 저장 (crawl_time 컬럼 추가)"""
