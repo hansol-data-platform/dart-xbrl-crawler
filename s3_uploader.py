@@ -78,8 +78,8 @@ class S3Uploader:
         Returns:
             dict: {"year": "2025", "month": "06"} 또는 None
         """
-        # FS_회사코드_YYYYMM.csv 패턴에서 YYYYMM 추출
-        pattern = r'FS_\d{8}_(\d{4})(\d{2})\.csv'
+        # FS_회사코드_YYYYMM.parquet 패턴에서 YYYYMM 추출
+        pattern = r'FS_\d{8}_(\d{4})(\d{2})\.parquet'
         match = re.search(pattern, filename)
 
         if match:
@@ -115,10 +115,10 @@ class S3Uploader:
 
         return s3_key
 
-    def prepare_csv_for_upload(self, csv_file_path: str) -> Optional[str]:
+    def prepare_parquet_for_upload(self, parquet_file_path: str) -> Optional[str]:
         """
         =========================================================================
-        🗂️ 중요: CSV 파일에서 파티션 컬럼 제거 🗂️
+        🗂️ 중요: Parquet 파일에서 파티션 컬럼 제거 🗂️
         =========================================================================
 
         목적: S3 파티션 구조로 저장 시 yyyy, month 컬럼은 불필요
@@ -135,14 +135,14 @@ class S3Uploader:
         =========================================================================
 
         Args:
-            csv_file_path (str): 원본 CSV 파일 경로
+            parquet_file_path (str): 원본 Parquet 파일 경로
 
         Returns:
-            str: 수정된 CSV 파일 경로 (임시 파일) 또는 None
+            str: 수정된 Parquet 파일 경로 (임시 파일) 또는 None
         """
         try:
-            # CSV 파일 읽기
-            df = pd.read_csv(csv_file_path, encoding='utf-8-sig')
+            # Parquet 파일 읽기
+            df = pd.read_parquet(parquet_file_path)
 
             # 파티션 컬럼 제거 (yyyy, month)
             drop_columns = ['yyyy', 'month']
@@ -158,13 +158,13 @@ class S3Uploader:
                 print("제거할 파티션 컬럼이 없습니다.")
 
             # 임시 파일로 저장
-            temp_file_path = csv_file_path.replace('.csv', '_temp_for_s3.csv')
-            df_cleaned.to_csv(temp_file_path, index=False, encoding='utf-8-sig')
+            temp_file_path = parquet_file_path.replace('.parquet', '_temp_for_s3.parquet')
+            df_cleaned.to_parquet(temp_file_path, index=False)
 
             return temp_file_path
 
         except Exception as e:
-            print(f"CSV 파일 전처리 오류 ({csv_file_path}): {e}")
+            print(f"Parquet 파일 전처리 오류 ({parquet_file_path}): {e}")
             return None
 
     def upload_file_to_s3(self, local_file_path: str, s3_key: str) -> bool:
@@ -218,18 +218,18 @@ class S3Uploader:
             self.stats["files_failed"] += 1
             return False
 
-    def upload_csv_files(self, csv_files: List[str]) -> Dict:
+    def upload_parquet_files(self, parquet_files: List[str]) -> Dict:
         """
-        여러 CSV 파일을 S3에 파티셔닝하여 업로드
+        여러 Parquet 파일을 S3에 파티셔닝하여 업로드
 
         Args:
-            csv_files (list): CSV 파일 경로 목록
+            parquet_files (list): Parquet 파일 경로 목록
 
         Returns:
             dict: 업로드 결과 통계
         """
         print(f"\n=== S3 파티셔닝 업로드 시작 ===")
-        print(f"업로드할 파일 수: {len(csv_files)}")
+        print(f"업로드할 파일 수: {len(parquet_files)}")
         if self.dry_run:
             print(f"[DRY-RUN MODE] 실제 업로드 없이 시뮬레이션만 수행")
 
@@ -240,11 +240,11 @@ class S3Uploader:
         uploaded_files = []
         temp_files_to_cleanup = []
 
-        for i, csv_file in enumerate(csv_files, 1):
-            print(f"\n[{i}/{len(csv_files)}] 처리 중: {Path(csv_file).name}")
+        for i, parquet_file in enumerate(parquet_files, 1):
+            print(f"\n[{i}/{len(parquet_files)}] 처리 중: {Path(parquet_file).name}")
 
             # 1. 파티션 정보 추출
-            filename = Path(csv_file).name
+            filename = Path(parquet_file).name
             partition_info = self.extract_partition_info(filename)
 
             if not partition_info:
@@ -256,22 +256,22 @@ class S3Uploader:
 
             print(f"  파티션: year={year}/mm={month}")
 
-            # 2. CSV 파일 전처리 (파티션 컬럼 제거)
-            temp_csv_path = self.prepare_csv_for_upload(csv_file)
-            if not temp_csv_path:
-                print(f"CSV 전처리 실패, 건너뜀: {filename}")
+            # 2. Parquet 파일 전처리 (파티션 컬럼 제거)
+            temp_parquet_path = self.prepare_parquet_for_upload(parquet_file)
+            if not temp_parquet_path:
+                print(f"Parquet 전처리 실패, 건너뜀: {filename}")
                 continue
 
-            temp_files_to_cleanup.append(temp_csv_path)
+            temp_files_to_cleanup.append(temp_parquet_path)
 
             # 3. S3 키 생성
             s3_key = self.generate_s3_key(filename, year, month)
             print(f"  S3 경로: s3://{self.bucket_name}/{s3_key}")
 
             # 4. S3 업로드
-            if self.upload_file_to_s3(temp_csv_path, s3_key):
+            if self.upload_file_to_s3(temp_parquet_path, s3_key):
                 uploaded_files.append({
-                    "local_file": csv_file,
+                    "local_file": parquet_file,
                     "s3_key": s3_key,
                     "partition": f"year={year}/mm={month}"
                 })

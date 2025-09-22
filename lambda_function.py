@@ -231,18 +231,18 @@ def lambda_handler(event, context):
         process_stats = processor.process_all_xbrl_files()
 
         # 8. S3 업로드
-        csv_files = []
+        parquet_files = []
         if params['upload_s3'] and process_stats['files_processed'] > 0:
             logger.info("S3 업로드 시작")
 
-            # 생성된 CSV 파일 목록 수집
-            csv_files = processor.get_generated_csv_files()
+            # 생성된 Parquet 파일 목록 수집
+            parquet_files = processor.get_generated_parquet_files()
 
-            if csv_files:
-                processor.upload_to_s3(csv_files)
-                logger.info(f"S3 업로드 완료: {len(csv_files)}개 파일")
+            if parquet_files:
+                processor.upload_to_s3(parquet_files)
+                logger.info(f"S3 업로드 완료: {len(parquet_files)}개 파일")
             else:
-                logger.warning("업로드할 CSV 파일이 없습니다")
+                logger.warning("업로드할 Parquet 파일이 없습니다")
 
         # 9. 실행 결과 요약
         end_time = datetime.now()
@@ -261,7 +261,7 @@ def lambda_handler(event, context):
                 'duration_seconds': execution_duration,
                 'parameters': params,
                 'statistics': final_stats,
-                'csv_files_generated': len(csv_files),
+                'parquet_files_generated': len(parquet_files),
                 'message': f"처리 완료: {final_stats.get('files_processed', 0)}개 파일 처리됨"
             }, ensure_ascii=False, indent=2)
         }
@@ -269,7 +269,7 @@ def lambda_handler(event, context):
         logger.info("=" * 60)
         logger.info(f"XBRL DART Lambda 실행 완료 - 소요시간: {execution_duration:.2f}초")
         logger.info(f"처리된 파일: {final_stats.get('files_processed', 0)}개")
-        logger.info(f"생성된 CSV: {len(csv_files)}개")
+        logger.info(f"생성된 Parquet: {len(parquet_files)}개")
         logger.info("=" * 60)
 
         return result

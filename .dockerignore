@@ -1,0 +1,84 @@
+# Git 관련
+.git
+.gitignore
+
+# Claude Code 관련
+.claude
+.serena
+claudedocs
+
+# 레거시/임시 파일들
+legacy
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# 개발/테스트 파일들
+*.csv
+*.zip
+*.xbrl
+*.xsd
+*.xml
+*.log
+
+# 환경 설정
+.env
+.env.local
+.env.*.local
+
+# IDE 설정
+.vscode
+.idea
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# 임시 디렉토리
+tmp/
+temp/
+.tmp
+
+# 문서화
+*.md
+docs/
+README*
+
+# 테스트
+test/
+tests/
+*_test.py
+test_*.py
+
+# 빌드 아티팩트
+build/
+dist/
+*.egg-info/
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints
+
+# 기타 개발 도구
+.pytest_cache
+.coverage
+htmlcov/
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Docker 관련 (중복 빌드 방지)
+Dockerfile*
+docker-compose*
+.dockerignore

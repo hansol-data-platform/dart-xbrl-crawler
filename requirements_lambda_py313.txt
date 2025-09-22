@@ -29,6 +29,8 @@ cryptography>=43.0.0
 # 데이터 처리 라이브러리 (컨테이너에 직접 포함)
 pandas>=2.0.0
 numpy>=1.24.0
+# Parquet 지원을 위한 pyarrow
+pyarrow>=15.0.0
 
 # DART FSS API 클라이언트
 dart-fss>=0.4.0

@@ -1,39 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-XBRL 재무제표 데이터 처리 엔진
-
-이 모듈은 한국 DART(Data Analysis, Retrieval and Transfer system)에서
-다운로드한 XBRL 파일을 분석하여 구조화된 재무제표 데이터를 생성합니다.
-
-주요 기능:
-1. XBRL 파일 파싱 및 재무제표 추출 (연결재무상태표, 연결손익계산서)
-2. 다차원 데이터를 행-열 구조로 피벗 변환
-3. 보고서 기간 기반 데이터 필터링 (불필요한 과거 데이터 제거)
-4. 재무상태표 계층구조 개선 (자산/부채/자본 총계 항목 정리)
-5. Parquet 포맷으로 저장 (CSV 파싱 오류 방지 및 성능 최적화)
-
-처리 흐름:
-XBRL 파일 → 재무제표 추출 → 피벗 변환 → 기간 필터링 → 계층구조 개선 → Parquet 저장
-
-출력 데이터 구조:
-- order_no: 항목 순서 번호
-- yyyy, month: 보고 연도, 월
-- corp_code, corp_name: 기업 코드, 기업명
-- report_type: 보고서 유형 (BS=재무상태표, CIS=손익계산서)
-- concept_id: IFRS 개념 식별자
-- label_ko, label_en: 항목명 (한글, 영문)
-- class0~class3: 계층 구조 분류
-- fs_type: 재무제표 유형 (연결, 별도)
-- period: 보고 기간
-- amount: 금액
-- crawl_time: 데이터 처리 시간
-
-사용법:
-    python xbrl_processor.py <xbrl_file_path>
-
-예시:
-    python xbrl_processor.py entity00171636_2025-06-30.xbrl
+XBRL 파일을 처리하여 최종 CSV 파일을 생성하는 메인 처리 엔진 - 디버그 버전
+각 단계별로 유형자산 존재 여부를 추적합니다.
 """
 
 import os
@@ -55,50 +24,39 @@ from dart_fss.xbrl import get_xbrl_from_file
 
 
 class XBRLProcessor:
-    """
-    XBRL 재무제표 데이터 처리를 위한 메인 클래스
-
-    이 클래스는 XBRL 파일을 읽어서 구조화된 재무제표 데이터를 생성하는
-    모든 기능을 담당합니다. DART에서 다운로드한 XBRL 파일의 복잡한
-    다차원 구조를 분석하여 Athena에서 쿼리 가능한 형태로 변환합니다.
-
-    주요 처리 단계:
-    1. XBRL 파일 로드 및 메타데이터 추출
-    2. 연결재무상태표, 연결손익계산서 데이터 추출
-    3. 다차원 데이터를 2차원 테이블로 피벗 변환
-    4. 보고서 기간에 맞는 데이터만 필터링
-    5. 재무상태표 계층구조 개선 및 정리
-    6. Parquet 포맷으로 최종 저장
-
-    Attributes:
-        corp_name_mapping (dict): 기업코드-기업명 매핑 딕셔너리
-        debug_mode (bool): 디버그 로그 출력 여부
-    """
+    """XBRL 파일 처리를 위한 메인 클래스"""
 
     def __init__(self):
-        """
-        XBRLProcessor 인스턴스 초기화
-
-        corp_list.json 파일에서 기업코드-기업명 매핑을 로드하고
-        디버그 모드를 설정합니다.
-        """
+        """초기화"""
         self.corp_name_mapping = self._load_corp_name_mapping()
-        self.debug_mode = False  # 프로덕션 환경에서는 디버그 로그 비활성화
+        self.debug_mode = True  # 디버그 모드 활성화
+
+    def _load_corp_name_mapping(self):
+        """corp_list.json에서 회사코드-회사명 매핑 로드"""
+        try:
+            corp_list_path = 'corp_list.json'
+            if os.path.exists(corp_list_path):
+                with open(corp_list_path, 'r', encoding='utf-8') as f:
+                    corp_list = json.load(f)
+                # corp_code를 키로, name을 값으로 하는 딕셔너리 생성
+                mapping = {corp['corp_code']: corp['name'] for corp in corp_list}
+                print(f"회사명 매핑 로드 완료: {len(mapping)}개 회사")
+                return mapping
+            else:
+                print(f"경고: {corp_list_path} 파일을 찾을 수 없습니다. XBRL 파일의 회사명을 사용합니다.")
+                return {}
+        except Exception as e:
+            print(f"corp_list.json 로드 중 오류: {e}")
+            return {}
 
     def _check_ppe_existence(self, df, step_name):
         """
-        유형자산 항목의 존재 여부를 체크하는 디버그 함수
+        유형자산 항목의 존재 여부를 체크하는 간단한 함수
 
         Args:
-            df: 체크할 DataFrame
-            step_name: 체크하는 단계명
-
-        Returns:
-            bool: 유형자산 항목이 있으면 True, 없으면 False
+            df (pd.DataFrame): 체크할 데이터프레임
+            step_name (str): 단계 이름
         """
-        if not self.debug_mode:
-            return False
-
         if df.empty:
             print(f"  [- {step_name}] DataFrame 비어있음")
             return False
@@ -127,59 +85,16 @@ class XBRLProcessor:
         else:
             print(f"  [X {step_name}] 유형자산 없음!")
             return False
-    
-    def _load_corp_name_mapping(self):
-        """
-        기업 코드와 기업명 매핑 정보를 로드합니다.
-
-        corp_list.json 파일에서 DART 등록 기업들의 코드-명칭 매핑을
-        읽어와서 XBRL 파일 처리 시 정확한 기업명을 설정할 수 있도록 합니다.
-        파일이 없거나 로드에 실패하면 빈 딕셔너리를 반환합니다.
-
-        Returns:
-            dict: {기업코드(str): 기업명(str)} 형태의 매핑 딕셔너리
-
-        Note:
-            corp_list.json 파일 형식:
-            [{"corp_code": "00000000", "name": "기업명"}, ...]
-        """
-        try:
-            corp_list_path = 'corp_list.json'
-            if os.path.exists(corp_list_path):
-                with open(corp_list_path, 'r', encoding='utf-8') as f:
-                    corp_list = json.load(f)
-                # corp_code를 키로, name을 값으로 하는 딕셔너리 생성
-                mapping = {corp['corp_code']: corp['name'] for corp in corp_list}
-                print(f"회사명 매핑 로드 완료: {len(mapping)}개 회사")
-                return mapping
-            else:
-                print(f"경고: {corp_list_path} 파일을 찾을 수 없습니다. XBRL 파일의 회사명을 사용합니다.")
-                return {}
-        except Exception as e:
-            print(f"corp_list.json 로드 중 오류: {e}")
-            return {}
 
     def extract_metadata_from_xbrl(self, xbrl):
         """
-        XBRL 객체에서 기업 및 보고서 메타데이터를 추출합니다.
-
-        XBRL 파일명과 내부 정보를 분석하여 기업코드, 기업명, 보고연도, 보고월 등의
-        메타데이터를 추출합니다. 이 정보는 최종 데이터의 식별자로 사용됩니다.
+        XBRL 객체에서 메타데이터 추출
 
         Args:
-            xbrl: dart-fss 라이브러리의 XBRL 객체
+            xbrl: dart_fss XBRL 객체
 
         Returns:
-            dict: 추출된 메타데이터
-                - corp_code (str): 8자리 기업코드 (예: "00171636")
-                - corp_name (str): 기업명 (우선순위: corp_list.json > XBRL 내부정보)
-                - yyyy (str): 보고연도 4자리 (예: "2025")
-                - month (str): 보고월 2자리 (예: "06")
-
-        Note:
-            - 기업코드는 파일명의 'entity{8자리숫자}' 패턴에서 추출
-            - 보고기간은 파일명의 YYYY-MM-DD 패턴에서 추출
-            - 기업명은 corp_list.json 매핑 우선, 없으면 XBRL 내부 정보 사용
+            dict: 메타데이터 (yyyy, month, corp_code, corp_name)
         """
         metadata = {}
 
@@ -255,7 +170,9 @@ class XBRLProcessor:
             tuple: (balance_sheet_df, income_statement_df, metadata)
         """
         try:
-            print(f"XBRL 파일 분석 중: {xbrl_path}")
+            print(f"\n{'='*60}")
+            print(f"XBRL 파일 분석 시작: {xbrl_path}")
+            print(f"{'='*60}")
 
             # XBRL 파일 로드
             xbrl = get_xbrl_from_file(xbrl_path)
@@ -267,15 +184,22 @@ class XBRLProcessor:
             # 연결재무상태표 추출
             balance_sheet_df = pd.DataFrame()
             try:
+                print("\n[STEP 1] XBRL에서 재무상태표 추출 시작...")
                 financial_statements = xbrl.get_financial_statement(separate=False)
                 if financial_statements:
                     balance_sheet = financial_statements[0]
                     balance_sheet_df = balance_sheet.to_DataFrame()
                     if not balance_sheet_df.empty:
+                        print(f"  → 원본 DataFrame: {len(balance_sheet_df)}행")
+                        self._check_ppe_existence(balance_sheet_df, "STEP 1: XBRL 원본 데이터")
+
+                        print("\n[STEP 2] 메타데이터 추가 중...")
                         balance_sheet_df = self.add_metadata_to_dataframe(
                             balance_sheet_df, metadata, 'BS'
                         )
-                        print(f"연결재무상태표: {len(balance_sheet_df)}행 추출")
+                        self._check_ppe_existence(balance_sheet_df, "STEP 2: 메타데이터 추가 후")
+
+                        print(f"\n연결재무상태표: {len(balance_sheet_df)}행 추출 완료")
             except Exception as e:
                 print(f"연결재무상태표 추출 중 오류: {e}")
 
@@ -293,6 +217,10 @@ class XBRLProcessor:
                         print(f"연결손익계산서: {len(income_statement_df)}행 추출")
             except Exception as e:
                 print(f"연결손익계산서 추출 중 오류: {e}")
+
+            print("\n[STEP 3] extract_financial_data 함수 완료")
+            if not balance_sheet_df.empty:
+                self._check_ppe_existence(balance_sheet_df, "STEP 3: extract_financial_data 완료")
 
             return balance_sheet_df, income_statement_df, metadata
 
@@ -412,41 +340,31 @@ class XBRLProcessor:
 
     def convert_to_pivot_format(self, df, metadata):
         """
-        XBRL의 다차원 데이터구조를 2차원 테이블로 피벗 변환합니다.
-
-        XBRL에서 추출한 재무제표 데이터는 행(concept)과 열(기간/구분)의 매트릭스 형태입니다.
-        이를 분석 가능한 행 단위 레코드로 변환하여 각 재무항목-기간 조합이 하나의 행이 되도록 합니다.
-
-        주요 처리 과정:
-        1. DataFrame 컬럼 구조 분석 (메타데이터 vs 데이터 컬럼 구분)
-        2. 각 concept(재무항목)에 대해 모든 기간 데이터를 개별 행으로 변환
-        3. 보고서 기간 기반 데이터 필터링 (현재 보고서와 무관한 과거 데이터 제거)
-        4. 정렬 및 정리
+        데이터를 피벗 포맷으로 변환 (중간 파일 없이 메모리에서 처리)
 
         Args:
-            df (pd.DataFrame): XBRL에서 추출한 원본 재무제표 DataFrame
-            metadata (dict): 기업코드, 보고연월 등의 메타데이터
+            df (pd.DataFrame): 원본 데이터프레임
+            metadata (dict): 메타데이터
 
         Returns:
-            pd.DataFrame: 피벗 변환된 재무제표 데이터
-                각 행은 하나의 재무항목-기간-구분 조합을 나타냄
-
-        Note:
-            - 기간 필터링은 ENABLE_PERIOD_FILTERING 플래그로 제어 가능
-            - 숫자가 아닌 값이나 0인 값은 제외됨
-            - 연결/별도 구분은 컬럼명에서 자동 파싱됨
+            pd.DataFrame: 피벗 포맷으로 변환된 데이터프레임
         """
         if df.empty:
             return df
 
         try:
-            print("피벗 포맷으로 변환 중...")
+            print(f"\n[STEP 4] 피벗 포맷 변환 시작...")
+            if metadata.get('report_type') == 'BS':
+                self._check_ppe_existence(df, "STEP 4: 피벗 변환 전")
 
             # DataFrame 구조 분석
             columns_info, data_columns = self.analyze_dataframe_structure(df)
 
             # 변환된 데이터 저장할 리스트
             converted_data = []
+
+            # 각 행에 대해 처리하면서 유형자산 카운트
+            ppe_count_during = 0
 
             # 각 행(concept)에 대해 처리
             for index, row in df.iterrows():
@@ -459,6 +377,10 @@ class XBRLProcessor:
                 class1 = row[columns_info['class1']] if columns_info['class1'] else ''
                 class2 = row[columns_info['class2']] if columns_info['class2'] else ''
                 class3 = row[columns_info['class3']] if columns_info['class3'] else ''
+
+                # 유형자산 체크
+                if '유형자산' in str(label_ko):
+                    ppe_count_during += 1
 
                 # 기본 행 정보 생성 (모든 원본 메타데이터 포함)
                 base_row = {
@@ -542,108 +464,58 @@ class XBRLProcessor:
                         print(f"컬럼 {col} 처리 중 오류: {col_error}")
                         continue
 
+            if metadata.get('report_type') == 'BS':
+                print(f"  → 피벗 변환 중 유형자산 발견 횟수: {ppe_count_during}")
+
             # DataFrame 생성
             result_df = pd.DataFrame(converted_data)
 
-            # =========================================================================
-            # 🔥 중요: 보고서 기간 기반 데이터 필터링 로직 🔥
-            # =========================================================================
-            #
-            # 문제상황:
-            # - 2025.06 반기보고서를 다운로드해도 실제 데이터에는 2025-06-30, 2024-06-30, 2024-12-31 등
-            #   여러 기간의 데이터가 모두 포함되어 있음
-            # - 하지만 우리는 해당 보고서 기간(2025.06)에 맞는 데이터만 필요함
-            #
-            # 해결방법:
-            # - 보고서명에서 추출한 기간 정보(예: "202506")를 기준으로
-            # - DataFrame의 period 컬럼에서 해당 년월에 맞는 데이터만 필터링
-            #
-            # 필터링 기준:
-            # - 보고서 기간이 "202506"이면 period 컬럼에서 "2025-06"이 포함된 행만 유지
-            # - 예: "2025-06-30", "2025-06-01 ~ 2025-06-30" 등은 유지
-            # - 예: "2024-06-30", "2024-12-31" 등은 제외
-            #
-            # 주의사항:
-            # - 이 필터링을 비활성화하려면 아래 if문을 False로 변경하거나 주석처리
-            # - 필터링 로직을 수정하려면 filter_condition 부분을 조정
-            # =========================================================================
+            print(f"\n[STEP 5] 피벗 변환 완료")
+            if metadata.get('report_type') == 'BS' and not result_df.empty:
+                print(f"  → 변환된 DataFrame: {len(result_df)}행")
+                self._check_ppe_existence(result_df, "STEP 5: 피벗 변환 후")
 
-            # 보고서 기간 기반 필터링 활성화/비활성화 스위치 (True: 활성화, False: 비활성화)
+            # 보고서 기간 기반 필터링
             ENABLE_PERIOD_FILTERING = True
 
             if ENABLE_PERIOD_FILTERING and not result_df.empty:
-                # 기간 정보 추출: 우선순위 1) report_nm에서 추출, 2) 메타데이터에서 추출
                 report_period_yyyymm = None
 
-                # 1) 보고서명에서 기간 정보 추출 (예: "반기보고서 (2025.06)" -> "202506")
-                if 'report_nm' in metadata:
-                    report_period_yyyymm = self.extract_period_from_report_name(metadata.get('report_nm', ''))
-
-                # 2) 보고서명이 없거나 추출 실패시 메타데이터의 yyyy, month에서 추출
-                if not report_period_yyyymm:
-                    yyyy = metadata.get('yyyy', '')
-                    month = metadata.get('month', '')
-                    if yyyy and month and len(yyyy) == 4 and len(month) == 2:
-                        report_period_yyyymm = f"{yyyy}{month}"
-                        print(f"[FILTER] 메타데이터에서 기간 정보 추출: {yyyy}-{month} -> {report_period_yyyymm}")
+                # 메타데이터에서 기간 정보 추출
+                yyyy = metadata.get('yyyy', '')
+                month = metadata.get('month', '')
+                if yyyy and month and len(yyyy) == 4 and len(month) == 2:
+                    report_period_yyyymm = f"{yyyy}{month}"
 
                 if report_period_yyyymm and len(report_period_yyyymm) == 6:
-                    # YYYYMM을 YYYY-MM 형태로 변환 (예: "202506" -> "2025-06")
+                    # YYYYMM을 YYYY-MM 형태로 변환
                     target_year = report_period_yyyymm[:4]
                     target_month = report_period_yyyymm[4:6]
                     target_period_pattern = f"{target_year}-{target_month}"
 
-                    print(f"[FILTER] 보고서 기간 필터링 적용: {metadata.get('report_nm', '')} -> {target_period_pattern}")
+                    print(f"\n[FILTER] 보고서 기간 필터링 적용: {target_period_pattern}")
                     print(f"   필터링 전 데이터 수: {len(result_df)}행")
 
                     # period 컬럼에서 해당 년월에 해당하는 행만 필터링
-                    # 보고서 기간(YYYY-MM)과 정확히 일치하는 기간 데이터만 유지
                     if 'period' in result_df.columns:
                         original_count = len(result_df)
 
-                        # 필터링 조건: period 컬럼에서 target_period_pattern(YYYY-MM)이 포함된 행만 유지
-                        # 예: 2025년 3월(202503) -> "2025-03"이 포함된 기간만 유지
                         filter_condition = result_df['period'].astype(str).str.contains(target_period_pattern, na=False)
                         result_df = result_df[filter_condition].reset_index(drop=True)
 
                         filtered_count = len(result_df)
                         print(f"   필터링 후 데이터 수: {filtered_count}행 (제거됨: {original_count - filtered_count}행)")
 
-                        # 디버깅을 위한 기간별 데이터 분포 출력
-                        if original_count > 0:
-                            print("   [DATA] 필터링 전 기간별 데이터 분포:")
-                            # 임시로 원본 데이터의 기간 분포 확인
-                            temp_df = pd.DataFrame(converted_data)
-                            if not temp_df.empty and 'period' in temp_df.columns:
-                                period_counts = temp_df['period'].value_counts().head(10)
-                                for period, count in period_counts.items():
-                                    status = "[KEEP]" if target_period_pattern in str(period) else "[SKIP]"
-                                    print(f"      {period}: {count}행 {status}")
-                    else:
-                        print("   [WARNING] period 컬럼이 없어 필터링을 수행할 수 없습니다.")
-                else:
-                    print(f"   [WARNING] 기간 정보를 추출할 수 없어 필터링을 건너뜁니다.")
-            else:
-                if not ENABLE_PERIOD_FILTERING:
-                    print("   [INFO] 보고서 기간 필터링이 비활성화되어 있습니다.")
-                elif result_df.empty:
-                    print("   [INFO] 데이터가 없어 필터링을 건너뜁니다.")
+                        print(f"\n[STEP 6] 기간 필터링 후")
+                        if metadata.get('report_type') == 'BS':
+                            print(f"  → 필터링 후 DataFrame: {filtered_count}행")
+                            self._check_ppe_existence(result_df, "STEP 6: 기간 필터링 후")
 
-            # =========================================================================
-            # 필터링 완료 후 데이터 정렬
-            # =========================================================================
+            print(f"\n[STEP 7] convert_to_pivot_format 함수 완료")
+            if metadata.get('report_type') == 'BS' and not result_df.empty:
+                self._check_ppe_existence(result_df, "STEP 7: 피벗 포맷 변환 최종")
 
-            # 정렬 (order_no를 최우선으로, 그 다음 period)
-            if not result_df.empty:
-                sort_columns = []
-                if 'order_no' in result_df.columns:
-                    sort_columns.append('order_no')
-                if 'period' in result_df.columns:
-                    sort_columns.append('period')
-                if sort_columns:
-                    result_df = result_df.sort_values(sort_columns).reset_index(drop=True)
-
-            print(f"피벗 변환 완료: {len(result_df)}행")
+            print(f"  → 최종 반환 DataFrame: {len(result_df)}행")
             return result_df
 
         except Exception as e:
@@ -689,24 +561,39 @@ class XBRLProcessor:
             # fallback: 메타데이터에서 년월 정보 조합
             yyyy = metadata.get('yyyy', '0000')
             month = metadata.get('month', '00')
-            return f"FS_{corp_code}_{yyyy}{month}.parquet"
+            return f"FS_{corp_code}_{yyyy}{month}.csv"
 
-    def save_to_parquet(self, df, output_path):
-        """DataFrame을 Parquet 포맷으로 저장 (crawl_time 컬럼 추가)"""
+    def save_to_csv(self, df, output_path):
+        """DataFrame을 UTF-8-sig CSV로 저장 (crawl_time 컬럼 추가)"""
         if df.empty:
             print("저장할 데이터가 없습니다.")
             return False
 
         try:
+            print(f"\n[STEP 13] CSV 파일 저장 시작...")
             # crawl_time 컬럼 추가 (현재 시간)
             df_copy = df.copy()
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             df_copy['crawl_time'] = current_time
 
-            # Parquet 저장
-            df_copy.to_parquet(output_path, index=False)
-            print(f"파일 저장 완료: {output_path}")
-            print(f"총 {len(df_copy)}행 저장됨 (crawl_time: {current_time})")
+            # 저장 직전 최종 확인
+            bs_data = df_copy[df_copy['report_type'] == 'BS'] if 'report_type' in df_copy.columns else pd.DataFrame()
+            if not bs_data.empty:
+                self._check_ppe_existence(bs_data, "STEP 13: CSV 파일에 쓰기 직전")
+
+            # CSV 저장
+            df_copy.to_csv(output_path, index=False, encoding='utf-8-sig')
+
+            # 저장 후 파일 읽기 확인
+            saved_df = pd.read_csv(output_path, encoding='utf-8-sig')
+            print(f"\n[STEP 14] CSV 파일 저장 완료 및 검증")
+            print(f"  → 저장된 파일: {output_path}")
+            print(f"  → 총 {len(saved_df)}행 저장됨")
+
+            bs_saved = saved_df[saved_df['report_type'] == 'BS'] if 'report_type' in saved_df.columns else pd.DataFrame()
+            if not bs_saved.empty:
+                self._check_ppe_existence(bs_saved, "STEP 14: 저장된 CSV 파일 검증")
+
             return True
         except Exception as e:
             print(f"파일 저장 중 오류: {e}")
@@ -714,50 +601,24 @@ class XBRLProcessor:
 
     def improve_hierarchy_structure(self, df):
         """
-        재무상태표의 계층구조를 분석에 적합하도록 개선합니다.
-
-        XBRL에서 추출된 재무상태표 데이터의 계층구조는 분석하기에 불편한 형태로
-        되어 있습니다. 이 메서드는 다음과 같은 개선을 수행합니다:
-
-        주요 개선사항:
-        1. 최상위 총계 항목 정리
-           - "자산 [개요]" → "자산총계"
-           - "부채 [개요]" → "부채총계"
-           - "자본 [개요]" → "자본총계"
-
-        2. 중복 분류 제거
-           - class1과 class2가 동일한 총계 항목의 class2를 빈값으로 변경
-           - 계층구조의 중복성 제거로 분석 편의성 향상
-
-        3. 순서번호 재정렬
-           - 자산총계를 order_no 0으로 설정 (최상단 배치)
-           - 부채총계, 자본총계를 각 섹션의 첫 번째로 배치
-
-        4. 불필요한 항목 제거
-           - "자본과부채총계" 항목 제거 (자본총계 + 부채총계와 중복)
+        재무상태표의 계층 구조를 개선
+        - 자산/부채/자본 [개요]를 자산총계/부채총계/자본총계로 변경
+        - 중복되는 class2 값을 빈값으로 처리
 
         Args:
-            df (pd.DataFrame): 피벗 변환된 재무제표 데이터
+            df (pd.DataFrame): 변환할 데이터프레임
 
         Returns:
-            pd.DataFrame: 계층구조가 개선된 재무제표 데이터
-
-        Note:
-            - 재무상태표(BS) 데이터만 처리하며 손익계산서(CIS)는 그대로 유지
-            - 개선 전후의 데이터 수 변화를 로그로 출력
+            pd.DataFrame: 계층 구조가 개선된 데이터프레임
         """
+        print(f"\n[STEP 8] 계층 구조 개선 시작...")
         df_copy = df.copy()
 
         # BS(재무상태표) 데이터만 처리
         bs_mask = df_copy['report_type'] == 'BS'
 
-        # 🔍 디버깅: 함수 시작 시 유형자산 확인
-        ppe_before = df_copy[bs_mask & (df_copy['label_ko'].str.contains('유형자산', na=False))]
-        print(f"[DEBUG] improve_hierarchy_structure 시작 - BS 항목: {len(df_copy[bs_mask])}개, 유형자산: {len(ppe_before)}개")
-        if len(ppe_before) > 0:
-            print(f"[DEBUG] 유형자산 항목들: {ppe_before['order_no'].tolist()}")
-            for _, item in ppe_before.iterrows():
-                print(f"[DEBUG]   - order_no {item['order_no']}: {item['label_ko']} ({item['concept_id']}) [{item['fs_type']}]")
+        print(f"  → 개선 전 BS DataFrame: {len(df_copy[bs_mask])}행")
+        self._check_ppe_existence(df_copy[bs_mask], "STEP 8: 계층 구조 개선 전")
 
         # 1. class1의 [개요] 항목들을 총계로 변경
         # 자산 [개요] → 자산총계
@@ -805,8 +666,6 @@ class XBRLProcessor:
                 mask = bs_mask & (df_copy['class1'] == '자본총계') & (df_copy['class2'] == '')
                 df_copy.loc[mask, 'order_no'] = first_equity_order_no
 
-            print(f"   order_no 재정렬 완료: 자산총계=0, 부채총계={first_debt_order_no if not debt_items.empty else 'N/A'}, 자본총계={first_equity_order_no if not equity_items.empty else 'N/A'}")
-
         # 4. BS에서 "자본과부채총계" 항목 제거
         original_count = len(df_copy[bs_mask])
 
@@ -819,16 +678,10 @@ class XBRLProcessor:
         if removed_count > 0:
             print(f"   '자본과부채총계' 항목 제거: {removed_count}개 항목 제거됨")
 
-        # 🔍 디버깅: 함수 종료 시 유형자산 확인
+        print(f"\n[STEP 9] 계층 구조 개선 완료")
         bs_data = df_copy[df_copy['report_type'] == 'BS']
-        ppe_after = bs_data[bs_data['label_ko'].str.contains('유형자산', na=False)]
-        print(f"[DEBUG] improve_hierarchy_structure 완료 - BS 항목: {len(df_copy[df_copy['report_type'] == 'BS'])}개, 유형자산: {len(ppe_after)}개")
-        if len(ppe_after) > 0:
-            print(f"[DEBUG] 남은 유형자산 항목들: {ppe_after['order_no'].tolist()}")
-        elif len(ppe_before) > 0:
-            print(f"[DEBUG] ⚠️  유형자산이 사라졌습니다! 시작할 때는 {len(ppe_before)}개 있었음")
-
-        print(f"계층 구조 개선 완료: {len(df_copy[df_copy['report_type'] == 'BS'])}개 BS 항목 처리 (원래: {original_count}개)")
+        print(f"  → 개선 후 BS DataFrame: {len(bs_data)}행 (원래: {original_count}행)")
+        self._check_ppe_existence(bs_data, "STEP 9: 계층 구조 개선 후")
 
         return df_copy
 
@@ -883,21 +736,37 @@ class XBRLProcessor:
             # 모든 재무제표 데이터를 하나로 합치기
             combined_df = pd.concat(all_financial_data, ignore_index=True)
 
+            print(f"\n[STEP 10] 재무제표 데이터 통합")
+            print(f"  → 통합 DataFrame: BS {len(combined_df[combined_df['report_type'] == 'BS'])}행 + CIS {len(combined_df[combined_df['report_type'] == 'CIS'])}행")
+            bs_data = combined_df[combined_df['report_type'] == 'BS']
+            if not bs_data.empty:
+                self._check_ppe_existence(bs_data, "STEP 10: 데이터 통합 후")
+
             # 재무상태표 계층 구조 개선
             combined_df = self.improve_hierarchy_structure(combined_df)
+
+            print(f"\n[STEP 11] improve_hierarchy_structure 호출 후")
+            bs_data = combined_df[combined_df['report_type'] == 'BS']
+            if not bs_data.empty:
+                self._check_ppe_existence(bs_data, "STEP 11: 계층 구조 개선 함수 호출 후")
 
             # report_type 기준으로 정렬 (BS 먼저, 그 다음 CIS)
             if 'report_type' in combined_df.columns:
                 combined_df = combined_df.sort_values(['report_type', 'order_no'], na_position='last').reset_index(drop=True)
 
+                print(f"\n[STEP 12] 최종 정렬 후 (저장 직전)")
+                bs_data = combined_df[combined_df['report_type'] == 'BS']
+                if not bs_data.empty:
+                    self._check_ppe_existence(bs_data, "STEP 12: CSV 저장 직전")
+
             # 통합 파일명 생성 (FS_ 접두사 사용)
             output_file = self.generate_output_filename(xbrl_path, 'FS', metadata)
 
-            print(f"통합 재무제표 데이터: {len(combined_df)}행")
+            print(f"\n통합 재무제표 데이터: {len(combined_df)}행")
             print(f"  - BS 데이터: {len(combined_df[combined_df['report_type'] == 'BS'])}행")
             print(f"  - CIS 데이터: {len(combined_df[combined_df['report_type'] == 'CIS'])}행")
 
-            if self.save_to_parquet(combined_df, output_file):
+            if self.save_to_csv(combined_df, output_file):
                 generated_files.append(output_file)
         else:
             print("저장할 재무제표 데이터가 없습니다.")
@@ -912,123 +781,12 @@ class XBRLProcessor:
 
         return generated_files
 
-    def process_xbrl_file_with_report_info(self, xbrl_path, report_nm=""):
-        """
-        XBRL 파일을 처리하여 최종 CSV 파일들을 생성 (보고서 정보 포함)
-
-        Args:
-            xbrl_path (str): XBRL 파일 경로
-            report_nm (str): 보고서명 (예: "반기보고서 (2025.06)")
-
-        Returns:
-            list: 생성된 파일 경로들
-        """
-        print("=== XBRL 파일 처리 시작 ===")
-        print(f"입력 파일: {xbrl_path}")
-        if report_nm:
-            print(f"보고서명: {report_nm}")
-
-        generated_files = []
-
-        try:
-            # Step 1: XBRL 파일에서 재무 데이터 추출
-            balance_sheet_df, income_statement_df, metadata = self.extract_financial_data(xbrl_path)
-
-            if balance_sheet_df.empty and income_statement_df.empty:
-                print("추출된 재무 데이터가 없습니다.")
-                return []
-
-            # Step 2: 보고서명 정보를 metadata에 추가 (필터링을 위해)
-            if report_nm:
-                metadata['report_nm'] = report_nm
-                print(f"보고서명 메타데이터 추가: {report_nm}")
-
-            # =========================================================================
-            # 🔄 중요: BS와 CIS를 하나의 파일로 통합 저장 🔄
-            # =========================================================================
-            #
-            # 변경사항:
-            # - 기존: BS_회사코드_년월.csv + CIS_회사코드_년월.csv (2개 파일)
-            # - 신규: FS_회사코드_년월.csv (1개 통합 파일)
-            #
-            # 이유:
-            # - BS와 CIS의 컬럼 구조가 동일함 (report_type 컬럼으로 구분 가능)
-            # - 데이터 분석 시 하나의 파일에서 모든 재무제표 정보 조회 가능
-            # - 파일 관리 및 처리 효율성 향상
-            #
-            # 수정방법:
-            # - 다시 분리하려면 아래 로직을 기존 개별 저장 방식으로 되돌리기
-            # =========================================================================
-
-            # Step 3 & 4: 연결재무상태표와 연결손익계산서 통합 처리
-            all_financial_data = []
-
-            # 연결재무상태표 변환
-            if not balance_sheet_df.empty:
-                print("\n--- 연결재무상태표 처리 ---")
-                pivot_bs_df = self.convert_to_pivot_format(balance_sheet_df, {**metadata, 'report_type': 'BS'})
-                if not pivot_bs_df.empty:
-                    all_financial_data.append(pivot_bs_df)
-                    print(f"연결재무상태표 데이터: {len(pivot_bs_df)}행")
-            else:
-                print("연결재무상태표 데이터가 없습니다.")
-
-            # 연결손익계산서 변환
-            if not income_statement_df.empty:
-                print("\n--- 연결손익계산서 처리 ---")
-                pivot_is_df = self.convert_to_pivot_format(income_statement_df, {**metadata, 'report_type': 'CIS'})
-                if not pivot_is_df.empty:
-                    all_financial_data.append(pivot_is_df)
-                    print(f"연결손익계산서 데이터: {len(pivot_is_df)}행")
-            else:
-                print("연결손익계산서 데이터가 없습니다.")
-
-            # 통합 데이터가 있는 경우 하나의 파일로 저장
-            if all_financial_data:
-                print("\n--- 재무제표 통합 저장 ---")
-
-                # 모든 재무제표 데이터를 하나로 합치기
-                combined_df = pd.concat(all_financial_data, ignore_index=True)
-
-                # 재무상태표 계층 구조 개선
-                combined_df = self.improve_hierarchy_structure(combined_df)
-
-                # report_type 기준으로 정렬 (BS 먼저, 그 다음 CIS)
-                if 'report_type' in combined_df.columns:
-                    combined_df = combined_df.sort_values(['report_type', 'order_no'], na_position='last').reset_index(drop=True)
-
-                # 통합 파일명 생성 (FS_ 접두사 사용)
-                output_file = self.generate_output_filename(xbrl_path, 'FS', metadata, report_nm)
-
-                print(f"통합 재무제표 데이터: {len(combined_df)}행")
-                print(f"  - BS 데이터: {len(combined_df[combined_df['report_type'] == 'BS'])}행")
-                print(f"  - CIS 데이터: {len(combined_df[combined_df['report_type'] == 'CIS'])}행")
-
-                if self.save_to_parquet(combined_df, output_file):
-                    generated_files.append(output_file)
-            else:
-                print("저장할 재무제표 데이터가 없습니다.")
-
-            print(f"\n=== 처리 완료 ===")
-            print(f"생성된 파일 수: {len(generated_files)}")
-            for file in generated_files:
-                print(f"  - {file}")
-
-            print("\n성공적으로 처리되었습니다!")
-
-        except Exception as e:
-            print(f"XBRL 파일 처리 중 오류: {e}")
-            import traceback
-            traceback.print_exc()
-
-        return generated_files
-
 
 def main():
     """메인 함수"""
     if len(sys.argv) != 2:
-        print("사용법: python xbrl_processor.py <xbrl_file_path>")
-        print("예시: python xbrl_processor.py 20250813001262_ifrs/entity00171636_2025-06-30.xbrl")
+        print("사용법: python xbrl_processor_debug.py <xbrl_file_path>")
+        print("예시: python xbrl_processor_debug.py entity00171636_2025-06-30.xbrl")
         sys.exit(1)
 
     xbrl_path = sys.argv[1]

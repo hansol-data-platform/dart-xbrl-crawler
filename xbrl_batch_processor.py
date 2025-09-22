@@ -292,23 +292,23 @@ class XBRLBatchProcessor:
             import traceback
             traceback.print_exc()
 
-    def upload_to_s3(self, csv_files: list):
+    def upload_to_s3(self, parquet_files: list):
         """
         =========================================================================
         ☁️ 중요: S3 파티셔닝 업로드 기능 ☁️
         =========================================================================
 
-        목적: 생성된 CSV 파일을 S3에 파티션 구조로 업로드
+        목적: 생성된 Parquet 파일을 S3에 파티션 구조로 업로드
 
         파티션 구조:
-        s3://bucket/prefix/year=YYYY/mm=MM/FS_회사코드_YYYYMM.csv
+        s3://bucket/prefix/year=YYYY/mm=MM/FS_회사코드_YYYYMM.parquet
 
         예시:
-        - FS_00171636_202506.csv → year=2025/mm=06/FS_00171636_202506.csv
-        - FS_01060744_202503.csv → year=2025/mm=03/FS_01060744_202503.csv
+        - FS_00171636_202506.parquet → year=2025/mm=06/FS_00171636_202506.parquet
+        - FS_01060744_202503.parquet → year=2025/mm=03/FS_01060744_202503.parquet
 
         파티션 컬럼 처리:
-        - yyyy, month 컬럼은 CSV에서 제거됨 (파티션 경로로 대체)
+        - yyyy, month 컬럼은 Parquet에서 제거됨 (파티션 경로로 대체)
         - 나머지 컬럼은 모두 유지
 
         비활성화:
@@ -324,8 +324,8 @@ class XBRLBatchProcessor:
                 print("AWS 자격 증명과 .env 파일의 S3 설정을 확인해주세요.")
                 return
 
-            # CSV 파일들을 S3에 업로드
-            upload_stats = self.s3_uploader.upload_csv_files(csv_files)
+            # Parquet 파일들을 S3에 업로드
+            upload_stats = self.s3_uploader.upload_parquet_files(parquet_files)
 
             # 업로드 통계를 메인 통계에 추가
             self.stats["s3_upload"] = upload_stats
@@ -501,19 +501,19 @@ class XBRLBatchProcessor:
 
         return all_csv_files
 
-    def get_generated_csv_files(self):
+    def get_generated_parquet_files(self):
         """
-        생성된 CSV 파일 목록 반환
+        생성된 Parquet 파일 목록 반환
 
         Returns:
-            list: CSV 파일 경로 목록
+            list: Parquet 파일 경로 목록
         """
-        csv_files = []
+        parquet_files = []
         if self.results_dir.exists():
-            csv_files = [str(f) for f in self.results_dir.glob("*.csv")]
+            parquet_files = [str(f) for f in self.results_dir.glob("*.parquet")]
 
-        print(f"생성된 CSV 파일: {len(csv_files)}개")
-        return csv_files
+        print(f"생성된 Parquet 파일: {len(parquet_files)}개")
+        return parquet_files
 
     def get_execution_stats(self):
         """
