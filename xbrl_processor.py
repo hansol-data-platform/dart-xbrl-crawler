@@ -143,21 +143,31 @@ class XBRLProcessor:
             corp_list.json 파일 형식:
             [{"corp_code": "00000000", "name": "기업명"}, ...]
         """
-        try:
-            corp_list_path = 'corp_list.json'
-            if os.path.exists(corp_list_path):
-                with open(corp_list_path, 'r', encoding='utf-8') as f:
-                    corp_list = json.load(f)
-                # corp_code를 키로, name을 값으로 하는 딕셔너리 생성
-                mapping = {corp['corp_code']: corp['name'] for corp in corp_list}
-                print(f"회사명 매핑 로드 완료: {len(mapping)}개 회사")
-                return mapping
-            else:
-                print(f"경고: {corp_list_path} 파일을 찾을 수 없습니다. XBRL 파일의 회사명을 사용합니다.")
-                return {}
-        except Exception as e:
-            print(f"corp_list.json 로드 중 오류: {e}")
-            return {}
+        # 여러 경로에서 corp_list.json 찾기 (Lambda 환경 대응)
+        possible_paths = [
+            'corp_list.json',
+            '/tmp/corp_list.json',
+            '/var/task/corp_list.json',  # Lambda 환경
+            os.path.join(os.path.dirname(__file__), 'corp_list.json')
+        ]
+
+        for corp_list_path in possible_paths:
+            try:
+                if os.path.exists(corp_list_path):
+                    with open(corp_list_path, 'r', encoding='utf-8') as f:
+                        corp_list = json.load(f)
+                    # corp_code를 키로, name을 값으로 하는 딕셔너리 생성
+                    # corp_code는 문자열로 강제 변환
+                    mapping = {str(corp['corp_code']): corp['name'] for corp in corp_list}
+                    print(f"✓ 회사명 매핑 로드 성공: {corp_list_path}에서 {len(mapping)}개 회사")
+                    return mapping
+            except Exception as e:
+                print(f"경고: {corp_list_path} 로드 실패: {e}")
+                continue
+
+        print(f"✗ 경고: 모든 경로에서 corp_list.json을 찾을 수 없습니다.")
+        print(f"  시도한 경로: {possible_paths}")
+        return {}
 
     def extract_metadata_from_xbrl(self, xbrl):
         """
@@ -172,46 +182,62 @@ class XBRLProcessor:
         Returns:
             dict: 추출된 메타데이터
                 - corp_code (str): 8자리 기업코드 (예: "00171636")
-                - corp_name (str): 기업명 (우선순위: corp_list.json > XBRL 내부정보)
+                - corp_name (str): 기업명 (corp_list.json에서만 가져옴)
                 - yyyy (str): 보고연도 4자리 (예: "2025")
                 - month (str): 보고월 2자리 (예: "06")
 
         Note:
             - 기업코드는 파일명의 'entity{8자리숫자}' 패턴에서 추출
             - 보고기간은 파일명의 YYYY-MM-DD 패턴에서 추출
-            - 기업명은 corp_list.json 매핑 우선, 없으면 XBRL 내부 정보 사용
+            - 기업명은 corp_list.json 매핑에서만 가져옴 (없으면 Unknown_{기업코드} 사용)
         """
         metadata = {}
 
-        # 법인코드 추출 (파일명에서)
+        # 법인코드 추출 (파일명에서) - 반드시 문자열로 처리
         try:
             filename = xbrl.filename
             if 'entity' in filename:
                 match = re.search(r'entity(\d{8})', filename)
-                metadata['corp_code'] = match.group(1) if match else '00000000'
+                metadata['corp_code'] = str(match.group(1)) if match else '00000000'
             else:
                 metadata['corp_code'] = '00000000'
         except:
             metadata['corp_code'] = '00000000'
 
-        # 법인명 설정: corp_list.json 매핑 우선, 없으면 XBRL에서 추출
-        try:
-            # 먼저 corp_list.json 매핑에서 찾기
+        # corp_code가 문자열인지 확인하고, 8자리 유지
+        metadata['corp_code'] = str(metadata['corp_code']).zfill(8)
+
+        # 법인명 설정: 무조건 corp_list.json 매핑 사용
+        # 디버깅 로그 추가
+        print(f"[DEBUG] corp_code: '{metadata['corp_code']}' (type: {type(metadata['corp_code'])})")
+        print(f"[DEBUG] 매핑 딕셔너리 크기: {len(self.corp_name_mapping)}")
+
+        if metadata['corp_code'] in self.corp_name_mapping:
+            metadata['corp_name'] = self.corp_name_mapping[metadata['corp_code']]
+            print(f"✓ corp_list.json에서 회사명 매핑 성공: {metadata['corp_code']} → {metadata['corp_name']}")
+        else:
+            # 매핑에 없으면 다시 시도 (매핑이 비어있을 수 있음)
+            print(f"⚠ 경고: 매핑에서 {metadata['corp_code']} 찾을 수 없음")
+            print(f"[DEBUG] 매핑 키 샘플: {list(self.corp_name_mapping.keys())[:5] if self.corp_name_mapping else 'Empty'}")
+
+            # corp_list.json 재로드
+            self.corp_name_mapping = self._load_corp_name_mapping()
+
             if metadata['corp_code'] in self.corp_name_mapping:
                 metadata['corp_name'] = self.corp_name_mapping[metadata['corp_code']]
-                print(f"corp_list.json에서 회사명 매핑: {metadata['corp_code']} → {metadata['corp_name']}")
+                print(f"✓ 재로드 후 회사명 찾음: {metadata['corp_code']} → {metadata['corp_name']}")
             else:
-                # 매핑에 없으면 XBRL에서 추출
-                entity_info = xbrl.get_entity_information()
-                corp_name_row = entity_info[entity_info.iloc[:, 0].str.contains('법인명', na=False)]
-                if not corp_name_row.empty:
-                    metadata['corp_name'] = str(corp_name_row.iloc[0, 2]).strip()
-                    print(f"XBRL에서 회사명 추출: {metadata['corp_name']}")
+                # 숫자형으로 변환된 경우도 체크 (앞의 0이 제거된 경우)
+                corp_code_without_zeros = metadata['corp_code'].lstrip('0')
+                for key, value in self.corp_name_mapping.items():
+                    if key.lstrip('0') == corp_code_without_zeros:
+                        metadata['corp_name'] = value
+                        print(f"✓ 0 제거 후 매칭 성공: {metadata['corp_code']} → {metadata['corp_name']}")
+                        break
                 else:
-                    metadata['corp_name'] = ''
-        except Exception as e:
-            print(f"법인명 설정 중 오류: {e}")
-            metadata['corp_name'] = ''
+                    # 정말 없는 경우 기업코드 사용
+                    metadata['corp_name'] = f"Corp_{metadata['corp_code']}"
+                    print(f"✗ 최종 실패: {metadata['corp_code']}를 찾을 수 없음. Corp_{metadata['corp_code']} 사용")
 
         try:
             # 기간 정보 추출

@@ -16,7 +16,8 @@
       "Bash(unzip:*)",
       "Bash(grep:*)",
       "Bash(dir)",
-      "Bash(more:*)"
+      "Bash(more:*)",
+      "Bash(dir:*)"
     ],
     "deny": [],
     "ask": []
