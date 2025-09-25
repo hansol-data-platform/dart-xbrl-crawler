@@ -10,7 +10,7 @@ S3 파티셔닝 업로드 관리자
 4. 업로드 진행상황 추적 및 오류 관리
 
 파티션 구조:
-s3://bucket/prefix/year=2025/mm=06/FS_회사코드_202506.csv
+s3://bucket/prefix/year=2025/mm=06/corp_code=00171636/report_type=BS/FS_00171636_202506.parquet
 """
 
 import os
@@ -68,45 +68,74 @@ class S3Uploader:
             "errors": []
         }
 
-    def extract_partition_info(self, filename: str) -> Optional[Dict[str, str]]:
+    def extract_partition_info(self, filename: str, parquet_data: Optional[pd.DataFrame] = None) -> Optional[Dict[str, str]]:
         """
-        파일명에서 파티션 정보 추출
+        파일명과 데이터에서 파티션 정보 추출
 
         Args:
-            filename (str): 파일명 (예: "FS_00171636_202506.csv")
+            filename (str): 파일명 (예: "FS_00171636_202506.parquet")
+            parquet_data (pd.DataFrame): Parquet 데이터 (corp_code, report_type 추출용)
 
         Returns:
-            dict: {"year": "2025", "month": "06"} 또는 None
+            dict: {"year": "2025", "month": "06", "corp_code": "00171636", "report_type": "BS"} 또는 None
         """
-        # FS_회사코드_YYYYMM.parquet 패턴에서 YYYYMM 추출
-        pattern = r'FS_\d{8}_(\d{4})(\d{2})\.parquet'
+        # FS_회사코드_YYYYMM.parquet 패턴에서 기본 정보 추출
+        pattern = r'FS_(\d{8})_(\d{4})(\d{2})\.parquet'
         match = re.search(pattern, filename)
 
-        if match:
-            year = match.group(1)
-            month = match.group(2)
-            return {
-                "year": year,
-                "month": month
-            }
+        if not match:
+            print(f"파일명 패턴이 맞지 않습니다: {filename}")
+            return None
 
-        print(f"파일명에서 파티션 정보를 추출할 수 없습니다: {filename}")
-        return None
+        corp_code = match.group(1)
+        year = match.group(2)
+        month = match.group(3)
 
-    def generate_s3_key(self, filename: str, year: str, month: str) -> str:
+        # 기본 파티션 정보
+        partition_info = {
+            "year": year,
+            "month": month,
+            "corp_code": corp_code
+        }
+
+        # Parquet 데이터에서 report_type 추출 (우선순위: BS > CIS)
+        if parquet_data is not None and not parquet_data.empty:
+            if 'report_type' in parquet_data.columns:
+                unique_report_types = parquet_data['report_type'].unique()
+                # BS (재무상태표)가 있으면 우선, 없으면 첫 번째 타입 사용
+                if 'BS' in unique_report_types:
+                    partition_info['report_type'] = 'BS'
+                elif len(unique_report_types) > 0:
+                    partition_info['report_type'] = str(unique_report_types[0])
+                else:
+                    partition_info['report_type'] = 'UNKNOWN'
+            else:
+                print(f"데이터에 report_type 컬럼이 없습니다: {filename}")
+                partition_info['report_type'] = 'UNKNOWN'
+        else:
+            # 데이터가 없으면 파일명으로 추정
+            partition_info['report_type'] = 'MIXED'
+
+        return partition_info
+
+    def generate_s3_key(self, filename: str, partition_info: Dict[str, str]) -> str:
         """
-        S3 키 생성 (파티션 경로 포함)
+        S3 키 생성 (확장된 파티션 경로 포함)
 
         Args:
             filename (str): 파일명
-            year (str): 년도 (4자리)
-            month (str): 월 (2자리)
+            partition_info (dict): 파티션 정보 {"year": "2025", "month": "06", "corp_code": "00171636", "report_type": "BS"}
 
         Returns:
             str: S3 키 경로
         """
-        # 파티션 경로 생성: year=YYYY/mm=MM/filename
-        partition_path = f"year={year}/mm={month}"
+        year = partition_info.get('year', 'unknown')
+        month = partition_info.get('month', 'unknown')
+        corp_code = partition_info.get('corp_code', 'unknown')
+        report_type = partition_info.get('report_type', 'unknown')
+
+        # 파티션 경로 생성: year=YYYY/mm=MM/corp_code=XXXXXXXX/report_type=XX/filename
+        partition_path = f"year={year}/mm={month}/corp_code={corp_code}/report_type={report_type}"
 
         if self.s3_prefix:
             s3_key = f"{self.s3_prefix}/{partition_path}/{filename}"
@@ -115,7 +144,7 @@ class S3Uploader:
 
         return s3_key
 
-    def prepare_parquet_for_upload(self, parquet_file_path: str) -> Optional[str]:
+    def prepare_parquet_for_upload(self, parquet_file_path: str) -> Optional[Dict[str, any]]:
         """
         =========================================================================
         🗂️ 중요: Parquet 파일에서 파티션 컬럼 제거 🗂️
@@ -128,24 +157,27 @@ class S3Uploader:
         - month 컬럼: 파티션 경로의 mm=MM으로 대체
 
         유지 대상:
-        - 나머지 모든 컬럼 (order_no, corp_code, corp_name, report_type 등)
+        - 나머지 모든 컬럼 (order_no, corp_name, concept_id, label_ko, value 등)
+        - corp_code, report_type은 파티션으로 활용되므로 파일에서는 제거 가능
 
         수정방법:
         - 다시 yyyy, month를 포함하려면 drop_columns 리스트에서 제거
+        - corp_code, report_type을 파일에 유지하려면 drop_columns에서 제거
         =========================================================================
 
         Args:
             parquet_file_path (str): 원본 Parquet 파일 경로
 
         Returns:
-            str: 수정된 Parquet 파일 경로 (임시 파일) 또는 None
+            dict: {"temp_file_path": str, "original_data": pd.DataFrame} 또는 None
         """
         try:
             # Parquet 파일 읽기
             df = pd.read_parquet(parquet_file_path)
 
-            # 파티션 컬럼 제거 (yyyy, month)
-            drop_columns = ['yyyy', 'month']
+            # 파티션 컬럼 제거 (yyyy, month, corp_code, report_type)
+            # QuickSight에서 파티션으로 필터링할 수 있으므로 데이터에서는 제거
+            drop_columns = ['yyyy', 'month', 'corp_code', 'report_type']
             columns_to_drop = [col for col in drop_columns if col in df.columns]
 
             if columns_to_drop:
@@ -161,7 +193,10 @@ class S3Uploader:
             temp_file_path = parquet_file_path.replace('.parquet', '_temp_for_s3.parquet')
             df_cleaned.to_parquet(temp_file_path, index=False)
 
-            return temp_file_path
+            return {
+                "temp_file_path": temp_file_path,
+                "original_data": df  # 파티션 정보 추출용
+            }
 
         except Exception as e:
             print(f"Parquet 파일 전처리 오류 ({parquet_file_path}): {e}")
@@ -218,9 +253,13 @@ class S3Uploader:
             self.stats["files_failed"] += 1
             return False
 
-    def upload_parquet_files(self, parquet_files: List[str]) -> Dict:
+    def filter_and_upload_by_partitions(self, parquet_files: List[str]) -> Dict:
         """
-        여러 Parquet 파일을 S3에 파티셔닝하여 업로드
+        Parquet 파일들을 파티션별로 필터링하여 S3에 업로드
+
+        각 파일을 corp_code 및 report_type별로 분리하여 업로드합니다.
+        동일한 corp_code/report_type 조합이 여러 파일에 있을 경우,
+        별도의 파일로 분리하여 저장합니다.
 
         Args:
             parquet_files (list): Parquet 파일 경로 목록
@@ -228,7 +267,184 @@ class S3Uploader:
         Returns:
             dict: 업로드 결과 통계
         """
-        print(f"\n=== S3 파티셔닝 업로드 시작 ===")
+        print(f"\n=== S3 파티션별 필터링 업로드 시작 ===")
+        print(f"업로드할 파일 수: {len(parquet_files)}")
+        if self.dry_run:
+            print(f"[DRY-RUN MODE] 실제 업로드 없이 시뮬레이션만 수행")
+
+        if not self.dry_run and not self.s3_client:
+            print("S3 클라이언트가 초기화되지 않아 업로드를 건너뜁니다.")
+            return self.stats
+
+        uploaded_files = []
+        temp_files_to_cleanup = []
+        partition_file_groups = {}  # corp_code + report_type별로 그룹화
+
+        # 1단계: 모든 파일의 데이터를 파티션별로 그룹화
+        for i, parquet_file in enumerate(parquet_files, 1):
+            print(f"\n[{i}/{len(parquet_files)}] 분석 중: {Path(parquet_file).name}")
+
+            try:
+                # 원본 데이터 로드
+                df = pd.read_parquet(parquet_file)
+
+                if df.empty:
+                    print(f"  빈 파일, 건너뜀")
+                    continue
+
+                # 파티션 정보 추출
+                filename = Path(parquet_file).name
+                partition_info = self.extract_partition_info(filename, df)
+
+                if not partition_info:
+                    print(f"  파티션 정보 추출 실패, 건너뜀")
+                    continue
+
+                year = partition_info["year"]
+                month = partition_info["month"]
+                base_corp_code = partition_info["corp_code"]
+
+                # corp_code 및 report_type별로 데이터 분리
+                unique_partitions = []
+
+                if 'corp_code' in df.columns and 'report_type' in df.columns:
+                    # 실제 데이터의 corp_code와 report_type 조합 확인
+                    partition_combinations = df[['corp_code', 'report_type']].drop_duplicates()
+
+                    for _, row in partition_combinations.iterrows():
+                        corp_code = str(row['corp_code']).zfill(8)
+                        report_type = str(row['report_type'])
+
+                        # 해당 파티션의 데이터만 필터링
+                        partition_data = df[(df['corp_code'] == row['corp_code']) &
+                                          (df['report_type'] == row['report_type'])].copy()
+
+                        if not partition_data.empty:
+                            partition_key = f"{year}_{month}_{corp_code}_{report_type}"
+
+                            if partition_key not in partition_file_groups:
+                                partition_file_groups[partition_key] = {
+                                    'year': year,
+                                    'month': month,
+                                    'corp_code': corp_code,
+                                    'report_type': report_type,
+                                    'data_frames': [],
+                                    'source_files': []
+                                }
+
+                            partition_file_groups[partition_key]['data_frames'].append(partition_data)
+                            partition_file_groups[partition_key]['source_files'].append(parquet_file)
+
+                            print(f"  파티션 {partition_key}: {len(partition_data)}개 행")
+
+                else:
+                    # corp_code, report_type 컬럼이 없는 경우 파일명 기반으로 처리
+                    report_type = partition_info.get('report_type', 'MIXED')
+                    partition_key = f"{year}_{month}_{base_corp_code}_{report_type}"
+
+                    if partition_key not in partition_file_groups:
+                        partition_file_groups[partition_key] = {
+                            'year': year,
+                            'month': month,
+                            'corp_code': base_corp_code,
+                            'report_type': report_type,
+                            'data_frames': [],
+                            'source_files': []
+                        }
+
+                    partition_file_groups[partition_key]['data_frames'].append(df)
+                    partition_file_groups[partition_key]['source_files'].append(parquet_file)
+
+                    print(f"  파티션 {partition_key}: {len(df)}개 행")
+
+            except Exception as e:
+                print(f"  파일 처리 오류: {e}")
+                continue
+
+        # 2단계: 파티션별로 데이터 병합 및 업로드
+        print(f"\n=== 총 {len(partition_file_groups)}개 파티션 업로드 시작 ===")
+
+        for partition_key, partition_data in partition_file_groups.items():
+            year = partition_data['year']
+            month = partition_data['month']
+            corp_code = partition_data['corp_code']
+            report_type = partition_data['report_type']
+
+            print(f"\n파티션 처리: {partition_key}")
+            print(f"  소스 파일: {len(partition_data['source_files'])}개")
+
+            try:
+                # 데이터 병합
+                if len(partition_data['data_frames']) == 1:
+                    merged_df = partition_data['data_frames'][0]
+                else:
+                    merged_df = pd.concat(partition_data['data_frames'], ignore_index=True)
+
+                print(f"  병합된 데이터: {len(merged_df)}개 행, {len(merged_df.columns)}개 컬럼")
+
+                # 파티션 컬럼 제거
+                drop_columns = ['yyyy', 'month', 'corp_code', 'report_type']
+                columns_to_drop = [col for col in drop_columns if col in merged_df.columns]
+
+                if columns_to_drop:
+                    merged_df_cleaned = merged_df.drop(columns=columns_to_drop)
+                    print(f"  파티션 컬럼 제거: {columns_to_drop}")
+                else:
+                    merged_df_cleaned = merged_df
+
+                # 임시 파일 생성
+                temp_filename = f"FS_{corp_code}_{year}{month}_{report_type}_partitioned.parquet"
+                temp_file_path = os.path.join(os.path.dirname(partition_data['source_files'][0]), temp_filename)
+
+                merged_df_cleaned.to_parquet(temp_file_path, index=False)
+                temp_files_to_cleanup.append(temp_file_path)
+
+                # S3 키 생성
+                partition_info_dict = {
+                    'year': year,
+                    'month': month,
+                    'corp_code': corp_code,
+                    'report_type': report_type
+                }
+
+                s3_key = self.generate_s3_key(temp_filename, partition_info_dict)
+                print(f"  S3 경로: s3://{self.bucket_name}/{s3_key}")
+
+                # S3 업로드
+                if self.upload_file_to_s3(temp_file_path, s3_key):
+                    uploaded_files.append({
+                        "local_files": partition_data['source_files'],
+                        "s3_key": s3_key,
+                        "partition": f"year={year}/mm={month}/corp_code={corp_code}/report_type={report_type}",
+                        "rows_count": len(merged_df)
+                    })
+                    print(f"  ✓ 업로드 성공")
+                else:
+                    print(f"  ✗ 업로드 실패")
+
+            except Exception as e:
+                print(f"  파티션 처리 오류: {e}")
+                continue
+
+        # 3단계: 임시 파일 정리
+        self.cleanup_temp_files(temp_files_to_cleanup)
+
+        # 4단계: 결과 보고서 생성
+        self.generate_partition_upload_report(uploaded_files)
+
+        return self.stats
+
+    def upload_parquet_files(self, parquet_files: List[str]) -> Dict:
+        """
+        여러 Parquet 파일을 S3에 파티셔닝하여 업로드 (기존 방식)
+
+        Args:
+            parquet_files (list): Parquet 파일 경로 목록
+
+        Returns:
+            dict: 업로드 결과 통계
+        """
+        print(f"\n=== S3 기본 파티셔닝 업로드 시작 ===")
         print(f"업로드할 파일 수: {len(parquet_files)}")
         if self.dry_run:
             print(f"[DRY-RUN MODE] 실제 업로드 없이 시뮬레이션만 수행")
@@ -243,29 +459,33 @@ class S3Uploader:
         for i, parquet_file in enumerate(parquet_files, 1):
             print(f"\n[{i}/{len(parquet_files)}] 처리 중: {Path(parquet_file).name}")
 
-            # 1. 파티션 정보 추출
+            # 1. Parquet 파일 전처리 (원본 데이터 로드 및 파티션 컬럼 제거)
             filename = Path(parquet_file).name
-            partition_info = self.extract_partition_info(filename)
+            prepare_result = self.prepare_parquet_for_upload(parquet_file)
 
+            if not prepare_result:
+                print(f"Parquet 전처리 실패, 건너뜀: {filename}")
+                continue
+
+            temp_parquet_path = prepare_result["temp_file_path"]
+            original_data = prepare_result["original_data"]
+            temp_files_to_cleanup.append(temp_parquet_path)
+
+            # 2. 파티션 정보 추출 (데이터 포함)
+            partition_info = self.extract_partition_info(filename, original_data)
             if not partition_info:
                 print(f"파티션 정보 추출 실패, 건너뜀: {filename}")
                 continue
 
             year = partition_info["year"]
             month = partition_info["month"]
+            corp_code = partition_info["corp_code"]
+            report_type = partition_info["report_type"]
 
-            print(f"  파티션: year={year}/mm={month}")
-
-            # 2. Parquet 파일 전처리 (파티션 컬럼 제거)
-            temp_parquet_path = self.prepare_parquet_for_upload(parquet_file)
-            if not temp_parquet_path:
-                print(f"Parquet 전처리 실패, 건너뜀: {filename}")
-                continue
-
-            temp_files_to_cleanup.append(temp_parquet_path)
+            print(f"  파티션: year={year}/mm={month}/corp_code={corp_code}/report_type={report_type}")
 
             # 3. S3 키 생성
-            s3_key = self.generate_s3_key(filename, year, month)
+            s3_key = self.generate_s3_key(filename, partition_info)
             print(f"  S3 경로: s3://{self.bucket_name}/{s3_key}")
 
             # 4. S3 업로드
@@ -273,7 +493,7 @@ class S3Uploader:
                 uploaded_files.append({
                     "local_file": parquet_file,
                     "s3_key": s3_key,
-                    "partition": f"year={year}/mm={month}"
+                    "partition": f"year={year}/mm={month}/corp_code={corp_code}/report_type={report_type}"
                 })
 
         # 5. 임시 파일 정리

@@ -295,21 +295,27 @@ class XBRLBatchProcessor:
     def upload_to_s3(self, parquet_files: list):
         """
         =========================================================================
-        ☁️ 중요: S3 파티셔닝 업로드 기능 ☁️
+☁️ 중요: S3 파티셔닝 업로드 기능 (QuickSight 최적화) ☁️
         =========================================================================
 
-        목적: 생성된 Parquet 파일을 S3에 파티션 구조로 업로드
+        목적: 생성된 Parquet 파일을 S3에 다단계 파티션 구조로 업로드
 
-        파티션 구조:
-        s3://bucket/prefix/year=YYYY/mm=MM/FS_회사코드_YYYYMM.parquet
+        파티션 구조 (개선됨):
+        s3://bucket/prefix/year=YYYY/mm=MM/corp_code=XXXXXXXX/report_type=XX/
 
         예시:
-        - FS_00171636_202506.parquet → year=2025/mm=06/FS_00171636_202506.parquet
-        - FS_01060744_202503.parquet → year=2025/mm=03/FS_01060744_202503.parquet
+        - FS_00171636_202506.parquet →
+          year=2025/mm=06/corp_code=00171636/report_type=BS/FS_00171636_202506.parquet
+          year=2025/mm=06/corp_code=00171636/report_type=CIS/FS_00171636_202506.parquet
 
         파티션 컬럼 처리:
-        - yyyy, month 컬럼은 Parquet에서 제거됨 (파티션 경로로 대체)
+        - yyyy, month, corp_code, report_type 컬럼은 Parquet에서 제거됨 (파티션으로 대체)
         - 나머지 컬럼은 모두 유지
+
+        QuickSight 이점:
+        - Direct Query 성능 대폭 향상
+        - corp_code, report_type별 선택적 스캔 가능
+        - 필터링 성능 최적화
 
         비활성화:
         - S3 업로드를 비활성화하려면 이 메서드 호출을 주석처리
@@ -324,20 +330,46 @@ class XBRLBatchProcessor:
                 print("AWS 자격 증명과 .env 파일의 S3 설정을 확인해주세요.")
                 return
 
-            # Parquet 파일들을 S3에 업로드
-            upload_stats = self.s3_uploader.upload_parquet_files(parquet_files)
+            # Parquet 파일들을 파티션별로 분리하여 S3에 업로드
+            # QuickSight Direct Query 성능 최적화를 위해 corp_code, report_type 파티션 사용
+            upload_stats = self.s3_uploader.filter_and_upload_by_partitions(parquet_files)
 
             # 업로드 통계를 메인 통계에 추가
             self.stats["s3_upload"] = upload_stats
 
-            print(f"S3 업로드 완료:")
+            print(f"S3 파티션별 업로드 완료:")
             print(f"  - 성공: {upload_stats['files_uploaded']}개")
             print(f"  - 실패: {upload_stats['files_failed']}개")
 
+            # 원본 파일 정리 (Glue 크롤링 시 중복 방지 필수)
+            self.cleanup_original_files_after_partition_upload(parquet_files)
+
         except Exception as e:
-            error_msg = f"S3 업로드 중 오류: {e}"
+            error_msg = f"S3 파티션별 업로드 중 오류: {e}"
             print(error_msg)
             self.stats["errors"].append(error_msg)
+            print("오류로 인해 S3 업로드를 건너뜁니다.")
+            print("오류 내용을 확인하고 재시도해주세요.")
+
+    def cleanup_original_files_after_partition_upload(self, parquet_files: list):
+        """
+        파티션별 업로드 후 원본 Parquet 파일 정리
+
+        파티션별로 분리되어 업로드된 후에는 원본 파일은 중복이므로 선택적 삭제
+        """
+        if not parquet_files:
+            return
+
+        print(f"\n=== 원본 Parquet 파일 정리 ===")
+
+        for parquet_file in parquet_files:
+            try:
+                if os.path.exists(parquet_file):
+                    filename = Path(parquet_file).name
+                    print(f"원본 파일 삭제: {filename} (Glue 중복 방지)")
+                    os.remove(parquet_file)  # Glue 크롤링 시 중복 데이터 방지
+            except Exception as e:
+                print(f"파일 삭제 오류 ({parquet_file}): {e}")
 
     def cleanup_temp_files(self):
         """임시 파일 정리"""
