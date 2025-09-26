@@ -104,6 +104,28 @@ class XBRLBatchProcessor:
         # 회사명별 매핑을 위한 dict 생성
         corp_name_mapping = {corp['corp_code']: corp['name'] for corp in corp_list}
 
+        # rcept_dt 매핑 파일 로드
+        rcept_mapping = {}
+        mapping_file = download_dir / "rcept_dt_mapping.json"
+
+        print(f"[DEBUG PATH] 매핑 파일 경로 확인: {mapping_file}")
+        print(f"[DEBUG PATH] 매핑 파일 존재 여부: {mapping_file.exists()}")
+
+        if mapping_file.exists():
+            try:
+                with open(mapping_file, 'r', encoding='utf-8') as f:
+                    rcept_mapping = json.load(f)
+                print(f"[MAPPING] rcept_dt 매핑 파일 로드 성공: {len(rcept_mapping)}개")
+                print(f"[MAPPING] 매핑 파일 내용 샘플: {dict(list(rcept_mapping.items())[:3])}")
+            except Exception as e:
+                print(f"[WARNING] rcept_dt 매핑 파일 로드 실패: {e}")
+        else:
+            print(f"[WARNING] 매핑 파일이 존재하지 않음: {mapping_file}")
+            # 디렉터리 내 파일 목록 확인
+            if download_dir.exists():
+                files = list(download_dir.glob("*"))
+                print(f"[DEBUG PATH] {download_dir} 내 파일들: {[f.name for f in files[:10]]}")
+
         for xbrl_file in download_dir.glob("**/*.xbrl"):
             # 파일 경로에서 회사 정보 추출 시도
             parts = xbrl_file.parts
@@ -120,7 +142,22 @@ class XBRLBatchProcessor:
 
                     if corp_name not in all_xbrl_files:
                         all_xbrl_files[corp_name] = []
-                    all_xbrl_files[corp_name].append(str(xbrl_file))
+
+                    # rcept_dt 정보 포함하여 딕셔너리 형태로 저장
+                    filename = xbrl_file.name
+                    rcept_dt = rcept_mapping.get(filename, '')
+
+                    xbrl_info = {
+                        'file_path': str(xbrl_file),
+                        'report_nm': '',  # 파일에서 추출할 수 없으므로 빈 문자열
+                        'rcept_dt': rcept_dt
+                    }
+                    all_xbrl_files[corp_name].append(xbrl_info)
+
+                    if rcept_dt:
+                        print(f"[MAPPING] {filename} → rcept_dt: {rcept_dt}")
+                    else:
+                        print(f"[WARNING] {filename} → rcept_dt 없음")
 
         print(f"기존 다운로드된 XBRL 파일 발견: {len(all_xbrl_files)}개 회사")
         for corp_name, files in all_xbrl_files.items():
@@ -157,17 +194,26 @@ class XBRLBatchProcessor:
                 if isinstance(xbrl_info, dict):
                     xbrl_file_path = xbrl_info['file_path']
                     report_nm = xbrl_info.get('report_nm', '')
+                    receipt_ymd = xbrl_info.get('rcept_dt', '')  # 접수일자 추출
                     print(f"  [{j}/{len(xbrl_files)}] 파일 처리 중: {Path(xbrl_file_path).name} ({report_nm})")
+                    print(f"    [DEBUG] xbrl_info 전체: {xbrl_info}")
+                    print(f"    [DEBUG] xbrl_info.keys(): {list(xbrl_info.keys())}")
+                    print(f"    [DEBUG] rcept_dt 원시값: '{xbrl_info.get('rcept_dt')}' (타입: {type(xbrl_info.get('rcept_dt'))})")
+                    print(f"    [DEBUG] 접수일자 (rcept_dt): '{receipt_ymd}' -> receipt_ymd로 전달")
                 else:
                     xbrl_file_path = xbrl_info
                     report_nm = ''
+                    receipt_ymd = ''
                     print(f"  [{j}/{len(xbrl_files)}] 파일 처리 중: {Path(xbrl_file_path).name}")
 
                 try:
-                    # XBRL 파일 처리 (보고서 정보 포함)
-                    # 보고서 정보가 있으면 새 메서드 사용, 없으면 기존 메서드 사용
-                    if report_nm and hasattr(self.xbrl_processor, 'process_xbrl_file_with_report_info'):
-                        csv_files = self.xbrl_processor.process_xbrl_file_with_report_info(xbrl_file_path, report_nm)
+                    # XBRL 파일 처리 (보고서 정보 포함) - 항상 report_info 버전 사용
+                    if hasattr(self.xbrl_processor, 'process_xbrl_file_with_report_info'):
+                        print(f"    [DEBUG] XBRL 처리 메서드 호출 전:")
+                        print(f"      - xbrl_file_path: {xbrl_file_path}")
+                        print(f"      - report_nm: '{report_nm}'")
+                        print(f"      - receipt_ymd: '{receipt_ymd}' (타입: {type(receipt_ymd)})")
+                        csv_files = self.xbrl_processor.process_xbrl_file_with_report_info(xbrl_file_path, report_nm, receipt_ymd)
                     else:
                         csv_files = self.xbrl_processor.process_xbrl_file(xbrl_file_path)
 
@@ -451,6 +497,7 @@ class XBRLBatchProcessor:
         Returns:
             dict: 처리 통계
         """
+        print("[CRITICAL DEBUG LAMBDA] process_all_xbrl_files 메서드 호출됨!")
         print("XBRL 파일 처리 시작")
 
         try:
@@ -465,6 +512,7 @@ class XBRLBatchProcessor:
                 }
 
             # 파일 처리
+            print(f"[CRITICAL DEBUG LAMBDA] process_all_xbrl_files_internal 호출 전: {len(all_xbrl_files)}개 회사")
             csv_files = self.process_all_xbrl_files_internal(all_xbrl_files)
 
             return {
@@ -487,6 +535,7 @@ class XBRLBatchProcessor:
         """
         내부용 XBRL 파일 처리 메서드 (기존 메서드명 충돌 방지)
         """
+        print(f"[CRITICAL DEBUG LAMBDA] process_all_xbrl_files_internal 진입!")
         all_csv_files = []
         total_companies = len(all_xbrl_files)
 
@@ -503,14 +552,23 @@ class XBRLBatchProcessor:
                 if isinstance(xbrl_info, dict):
                     xbrl_file_path = xbrl_info['file_path']
                     report_nm = xbrl_info.get('report_nm', '')
+                    receipt_ymd = xbrl_info.get('rcept_dt', '')  # 접수일자 추출 (여기가 빠져있었음!)
+                    print(f"    [DEBUG Lambda] xbrl_info 전체: {xbrl_info}")
+                    print(f"    [DEBUG Lambda] rcept_dt 원시값: '{xbrl_info.get('rcept_dt')}' (타입: {type(xbrl_info.get('rcept_dt'))})")
+                    print(f"    [DEBUG Lambda] 접수일자 (rcept_dt): '{receipt_ymd}' -> receipt_ymd로 전달")
                 else:
                     xbrl_file_path = xbrl_info
                     report_nm = ''
+                    receipt_ymd = ''
 
                 try:
-                    # XBRL 파일 처리
-                    if report_nm and hasattr(self.xbrl_processor, 'process_xbrl_file_with_report_info'):
-                        csv_files = self.xbrl_processor.process_xbrl_file_with_report_info(xbrl_file_path, report_nm)
+                    # XBRL 파일 처리 - 항상 report_info 버전 사용 (rcept_dt 전달 위해)
+                    if hasattr(self.xbrl_processor, 'process_xbrl_file_with_report_info'):
+                        print(f"    [DEBUG Lambda] XBRL 처리 메서드 호출 전:")
+                        print(f"      - xbrl_file_path: {xbrl_file_path}")
+                        print(f"      - report_nm: '{report_nm}'")
+                        print(f"      - receipt_ymd: '{receipt_ymd}' (타입: {type(receipt_ymd)})")
+                        csv_files = self.xbrl_processor.process_xbrl_file_with_report_info(xbrl_file_path, report_nm, receipt_ymd)
                     else:
                         csv_files = self.xbrl_processor.process_xbrl_file(xbrl_file_path)
 

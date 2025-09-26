@@ -1,65 +1,167 @@
-# XBRL Financial Data Analyzer 📊
+# DART XBRL Financial Data Crawler 📊
 
-한국 DART(전자공시시스템)에서 다운로드한 XBRL 재무제표 파일을 분석하여 구조화된 데이터로 변환하는 도구입니다.
+DART(전자공시시스템)에서 XBRL 재무제표 데이터를 자동 수집하고, 구조화된 Parquet 파일로 변환하여 S3에 저장하는 완전 자동화된 크롤링 시스템입니다.
 
-## 🎯 주요 기능
+## 🎯 시스템 개요
 
-### 📋 데이터 처리 파이프라인
+### 전체 아키텍처
 ```
-XBRL 파일 → 재무제표 추출 → 피벗 변환 → 기간 필터링 → 계층구조 개선 → Parquet 저장
-```
-
-### 🔧 핵심 기능
-- **XBRL 파싱**: DART XBRL 파일에서 연결재무상태표, 연결손익계산서 추출
-- **피벗 변환**: 다차원 매트릭스 구조를 분석 가능한 행-열 테이블로 변환
-- **기간 필터링**: 보고서 기간과 무관한 과거 데이터 자동 제거
-- **계층구조 개선**: 재무상태표 분류체계 정리 및 최적화
-- **Parquet 출력**: CSV 파싱 오류 방지 및 Athena 성능 최적화
-
-### 📈 지원 재무제표
-- **연결재무상태표** (Consolidated Balance Sheet)
-- **연결손익계산서** (Consolidated Income Statement)
-
-## 🏗️ 아키텍처
-
-### 시스템 구성도
-```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Corp Map API  │ <- │   XBRL Crawler   │ -> │   S3 Parquet    │ -> │   AWS Athena    │
+│     Lambda      │    │     Lambda       │    │     Files       │    │   Analytics     │
+│                 │    │                  │    │                 │    │                 │
+│ • Athena 쿼리   │    │ • DART API 호출  │    │ • 파티션 구조   │    │ • SQL 쿼리      │
+│ • 회사 목록     │    │ • XBRL 파싱      │    │ • Parquet 포맷  │    │ • 데이터 분석   │
+│ • 캐싱 시스템   │    │ • 데이터 변환    │    │ • 자동 업로드   │    │                 │
+└─────────────────┘    └──────────────────┘    └─────────────────┘    └─────────────────┘
+        │                        │                        │
+        │                        │                        │
+        ▼                        ▼                        ▼
 ┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   DART XBRL     │ -> │  XBRLProcessor   │ -> │   S3 Parquet    │
-│   Files         │    │                  │    │   Files         │
+│  Glue Catalog   │    │   DART OpenAPI   │    │   CloudWatch    │
+│                 │    │                  │    │                 │
+│ • table_corp_map│    │ • 공시목록 API   │    │ • 실행 로그     │
+│ • 스키마 관리   │    │ • XBRL 다운로드  │    │ • 오류 모니터링 │
 └─────────────────┘    └──────────────────┘    └─────────────────┘
-                                │
-                                ▼
-                       ┌──────────────────┐
-                       │  AWS Glue        │
-                       │  Crawler         │
-                       └──────────────────┘
-                                │
-                                ▼
-                       ┌──────────────────┐
-                       │  Amazon Athena   │
-                       │  Query Engine    │
-                       └──────────────────┘
 ```
 
-### 데이터 흐름
-1. **입력**: DART에서 다운로드한 ZIP 파일 내 XBRL 파일
-2. **처리**: XBRLProcessor를 통한 데이터 변환
-3. **저장**: S3에 Parquet 포맷으로 저장
-4. **인덱싱**: Glue Crawler를 통한 스키마 등록
-5. **분석**: Athena를 통한 SQL 쿼리
+## 🔄 데이터 처리 프로세스
+
+### 1단계: 회사 목록 수집
+```
+Corp Map API Lambda → Athena Query → Glue Catalog
+                   ↓
+            회사코드-회사명 매핑 (JSON)
+                   ↓
+            DART_CORP_CODE 필터링
+                   ↓
+        실제 처리 대상 회사 목록 반환
+```
+
+### 2단계: DART API 크롤링
+```
+DART OpenAPI 호출 → 최근 6개월 공시목록 조회
+        ↓
+XBRL 첨부파일 다운로드 → ZIP 압축해제
+        ↓
+재무제표 XBRL 파일 추출 → 메타데이터 매핑
+        ↓
+    rcept_dt 매핑파일 생성
+```
+
+### 3단계: XBRL 데이터 처리
+```
+XBRL 파일 파싱 → 재무제표 추출 (BS, CIS)
+        ↓
+다차원 데이터 → 2차원 테이블 변환
+        ↓
+계층구조 개선 → "총계" 제거, 분류체계 정리
+        ↓
+    Parquet 포맷 변환
+```
+
+### 4단계: S3 파티션 업로드
+```
+S3://bucket/prefix/year=2025/mm=09/
+        ↓
+파일명: corp_code=00171636_report_type=BS_receipt_ymd=20250926.parquet
+        ↓
+    Athena 테이블 자동 파티션 인식
+```
 
 ## 📁 프로젝트 구조
 
 ```
 xbrl-analyzer/
-├── xbrl_processor.py           # 메인 처리 엔진
-├── lambda_function.py          # AWS Lambda 핸들러
-├── requirements_lambda_py313.txt # 의존성 목록
-├── Dockerfile                  # 컨테이너 설정
-├── .dockerignore              # Docker 빌드 제외 파일
-├── corp_list.json             # 기업코드-기업명 매핑
-└── README.md                  # 프로젝트 문서
+├── 🚀 Main Lambda Components
+│   ├── lambda_function.py          # AWS Lambda 진입점
+│   ├── dart_api_manager.py         # DART API 통신 & 회사목록 관리
+│   ├── xbrl_processor.py           # XBRL 파싱 & 데이터 변환
+│   ├── xbrl_batch_processor.py     # 배치 처리 orchestration
+│   └── s3_uploader.py             # S3 파티션 업로드
+│
+├── 🗄️ Corp Map API Lambda
+│   └── fixed_corp_map_lambda.py    # 회사목록 조회 API (LPAD 적용)
+│
+├── ⚙️ Configuration
+│   ├── .env                       # 환경변수 (Local 개발용)
+│   ├── requirements.txt           # Python 의존성
+│   ├── Dockerfile                 # Container 설정
+│   └── .dockerignore             # Docker 빌드 제외
+│
+└── 📚 Documentation
+    └── README.md                  # 이 파일
+```
+
+## 🔧 환경 설정
+
+### 환경변수 우선순위
+1. **Lambda 환경변수** (운영 환경)
+2. **.env 파일** (로컬 개발 환경)
+
+### 필수 환경변수
+
+#### XBRL Crawler Lambda
+```env
+# DART API
+DART_API_KEY=your_dart_api_key
+
+# S3 Storage
+S3_BUCKET_NAME=hds-dap-dev-an2-datalake-01
+S3_PREFIX=l0/ver=1/sys=dart/loc=common/table=dart_report_from_xbrl/
+
+# Corp Map API Integration
+CORP_LIST_SOURCE=api
+CORP_MAP_API_URL=https://YOUR_FUNCTION_URL.lambda-url.ap-northeast-2.on.aws/
+```
+
+#### Corp Map API Lambda
+```env
+# Athena Configuration
+ATHENA_DATABASE=dev_fi_l0_database
+ATHENA_TABLE=table_corp_map
+ATHENA_OUTPUT_S3=s3://hds-dap-dev-an2-datalake-01/athena-results/
+CORP_CACHE_TTL_HOURS=24
+```
+
+## 🚀 배포 가이드
+
+### 1. Corp Map API Lambda 배포
+
+```bash
+# 1. Corp Map API Docker 빌드
+cp fixed_corp_map_lambda.py lambda_function.py
+docker build -t corp-map-api .
+
+# 2. ECR 푸시 & Lambda 배포
+aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin <account>.dkr.ecr.ap-northeast-2.amazonaws.com
+docker tag corp-map-api:latest <account>.dkr.ecr.ap-northeast-2.amazonaws.com/corp-map-api:latest
+docker push <account>.dkr.ecr.ap-northeast-2.amazonaws.com/corp-map-api:latest
+
+# 3. Lambda Function URL 생성 (AuthType: NONE)
+aws lambda create-function-url-config \
+  --function-name corp-map-api \
+  --auth-type NONE \
+  --cors '{"AllowOrigins":["*"],"AllowMethods":["GET"],"AllowHeaders":["content-type"]}' \
+  --region ap-northeast-2
+```
+
+### 2. XBRL Crawler Lambda 배포
+
+```bash
+# 1. Main Lambda Docker 빌드
+cp lambda_function.py lambda_function.py  # 이미 올바른 파일
+docker build -t dart-xbrl-crawler .
+
+# 2. ECR 푸시 & Lambda 배포
+docker tag dart-xbrl-crawler:latest <account>.dkr.ecr.ap-northeast-2.amazonaws.com/dart-xbrl-crawler:latest
+docker push <account>.dkr.ecr.ap-northeast-2.amazonaws.com/dart-xbrl-crawler:latest
+
+# 3. Lambda 함수 업데이트
+aws lambda update-function-code \
+  --function-name xbrl-analyzer \
+  --image-uri <account>.dkr.ecr.ap-northeast-2.amazonaws.com/dart-xbrl-crawler:latest \
+  --region ap-northeast-2
 ```
 
 ## 🗃️ 출력 데이터 스키마
@@ -67,209 +169,177 @@ xbrl-analyzer/
 ### Parquet 파일 구조
 | 컬럼명 | 타입 | 설명 | 예시 |
 |--------|------|------|------|
-| `order_no` | int | 항목 순서 번호 | 1, 2, 3... |
-| `yyyy` | string | 보고 연도 | "2025" |
-| `month` | string | 보고 월 | "06", "12" |
+| `order_no` | int | 항목 순서 | 1, 2, 3... |
+| `year` | string | 보고연도 | "2025" |
+| `mm` | string | 보고월 | "06", "12" |
+| `receipt_ymd` | string | 접수일자 | "20250926" |
 | `corp_code` | string | 8자리 기업코드 | "00171636" |
 | `corp_name` | string | 기업명 | "한솔홀딩스" |
-| `report_type` | string | 보고서 유형 | "BS", "CIS" |
-| `concept_id` | string | IFRS 개념 식별자 | "ifrs-full_PropertyPlantAndEquipment" |
-| `label_ko` | string | 항목명 (한글) | "유형자산" |
-| `label_en` | string | 항목명 (영문) | "Property, plant and equipment" |
-| `class0` | string | 최상위 분류 | "ifrs-full:StatementOfFinancialPositionAbstract" |
-| `class1` | string | 1차 분류 | "자산총계" |
-| `class2` | string | 2차 분류 | "비유동자산" |
-| `class3` | string | 3차 분류 | "유형자산" |
-| `fs_type` | string | 재무제표 구분 | "연결", "별도" |
-| `period` | string | 보고 기간 | "2025-06-30" |
-| `amount` | double | 금액 (원) | 77370233000.0 |
-| `crawl_time` | string | 처리 시간 | "2025-09-22 06:48:46" |
+| `report_type` | string | 보고서유형 | "BS", "CIS" |
+| `account_id` | string | IFRS 개념ID | "ifrs-full_PropertyPlantAndEquipment" |
+| `account_name` | string | 항목명(한글) | "유형자산" |
+| `account_name_en` | string | 항목명(영문) | "Property, plant and equipment" |
+| `class1` | string | 1차분류 | "자산", "부채", "자본" |
+| `class2` | string | 2차분류 | "비유동자산" |
+| `class3` | string | 3차분류 | "유형자산" |
+| `class1_id` | string | 1차분류id | "자산", "부채", "자본" |
+| `class2_id` | string | 2차분류id | "비유동자산" |
+| `class3_id` | string | 3차분류id | "유형자산" |
+| `fs_type` | string | 재무제표구분 | "연결", "별도" |
+| `period` | string | 보고기간 | "2025-06-30" |
+| `amount` | double | 금액(원) | 77370233000.0 |
+| `crawl_time` | string | 처리시간 | "2025-09-26 15:30:45" |
 
-### 샘플 데이터
+### S3 파티션 구조
 ```
-order_no: 18
-corp_code: 00171636
-corp_name: 한솔홀딩스
-report_type: BS
-concept_id: ifrs-full_PropertyPlantAndEquipment
-label_ko: 유형자산
-label_en: Property, plant and equipment
-class1: 자산총계
-class2: 비유동자산
-class3: 유형자산
-fs_type: 연결
-period: 2025-06-30
-amount: 77370233000.0
+s3://hds-dap-dev-an2-datalake-01/l0/ver=1/sys=dart/loc=common/table=dart_report_from_xbrl/
+├── year=2025/
+│   ├── mm=06/
+│   │   ├── corp_code=00171636_report_type=BS_receipt_ymd=20250926.parquet
+│   │   ├── corp_code=00171636_report_type=CIS_receipt_ymd=20250926.parquet
+│   │   └── ...
+│   └── mm=09/
+│       └── ...
+└── year=2024/
+    └── ...
 ```
 
-## 🚀 설치 및 실행
+## 📊 주요 특징
 
-### 로컬 환경
+### ✨ 자동화 기능
+- **완전 자동화**: 회사목록 조회부터 S3 업로드까지 전 과정 자동화
+- **스마트 캐싱**: Corp Map API 24시간 캐싱으로 성능 최적화
+- **오류 복구**: Corp Map API 실패 시 JSON 파일 Fallback
+- **파티션 관리**: 년도/월별 자동 파티션 생성
 
-#### 1. 의존성 설치
+### 🔧 데이터 품질 관리
+- **접수일자 매핑**: DART API rcept_dt를 receipt_ymd로 정확 매핑
+- **회사코드 표준화**: LPAD로 8자리 0-padding 처리 (171636 → 00171636)
+- **"총계" 정리**: BS 데이터에서 "자산총계" → "자산" 변환
+- **기간 필터링**: 보고서 기간과 무관한 과거 데이터 제거
+
+### 🚀 성능 최적화
+- **Parquet 포맷**: CSV 파싱 오류 방지 및 Athena 성능 향상
+- **배치 처리**: 다중 회사 동시 처리
+- **메모리 효율**: 대용량 XBRL 파일 스트리밍 처리
+- **중복 제거**: 동일 파일 재처리 방지
+
+## ⚠️ 주의사항
+
+### 🔴 필수 확인사항
+
+#### 1. Lambda Function URL 설정
 ```bash
-pip install -r requirements_lambda_py313.txt
+# Corp Map API Lambda AuthType이 NONE인지 확인
+aws lambda get-function-url-config --function-name corp-map-api --region ap-northeast-2
+
+# AuthType이 AWS_IAM이면 403 Forbidden 발생
 ```
 
-#### 2. 실행
+#### 2. IAM 권한 설정
+```yaml
+Corp Map API Lambda:
+  - AmazonAthenaFullAccess
+  - AmazonS3FullAccess (athena-results 경로)
+  - AWSGlueConsoleFullAccess
+
+XBRL Crawler Lambda:
+  - 기본 Lambda 실행 권한
+  - S3 업로드 권한 (target bucket)
+```
+
+#### 3. 환경변수 검증
 ```bash
-python xbrl_processor.py path/to/entity00171636_2025-06-30.xbrl
+# 실행 로그에서 환경변수 로드 상태 확인
+aws logs tail /aws/lambda/xbrl-analyzer --region ap-northeast-2
+
+# 다음과 같이 표시되어야 함:
+# [ENV] ✅ CORP_MAP_API_URL: https://...
+# [ENV] ✅ CORP_LIST_SOURCE: api
 ```
 
-### AWS Lambda 배포
+### ⚠️ 운영 시 주의사항
 
-#### 1. Docker 이미지 빌드
-```bash
-docker build -t xbrl-analyzer .
-```
+#### 1. DART API 제한
+- **Rate Limit**: 분당 1000회 호출 제한
+- **서비스 시간**: DART API 점검 시간 확인 필요
+- **API Key 갱신**: 정기적인 API Key 업데이트 필요
 
-#### 2. ECR에 푸시
-```bash
-# ECR 로그인
-aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin {account}.dkr.ecr.ap-northeast-2.amazonaws.com
+#### 2. 데이터 품질
+- **XBRL 파일 구조**: 회사별 XBRL 스키마 차이로 인한 파싱 오류 가능
+- **재무제표 기간**: 분기/반기/연간 보고서 기간 혼재 주의
+- **회사명 변경**: corp_map 테이블과 DART API 간 회사명 불일치 가능
 
-# 이미지 태깅
-docker tag xbrl-analyzer:latest {account}.dkr.ecr.ap-northeast-2.amazonaws.com/xbrl-analyzer:latest
+#### 3. 리소스 관리
+- **Lambda 타임아웃**: 15분 제한, 대량 처리 시 분할 실행 필요
+- **메모리 사용량**: 대용량 XBRL 파일 처리 시 메모리 부족 가능
+- **S3 용량**: 파티션 누적으로 인한 스토리지 비용 증가
 
-# 푸시
-docker push {account}.dkr.ecr.ap-northeast-2.amazonaws.com/xbrl-analyzer:latest
-```
+## 📈 Athena 쿼리 예시
 
-#### 3. Lambda 함수 업데이트
-AWS Lambda 콘솔에서 컨테이너 이미지를 업데이트합니다.
-
-## ⚙️ 주요 설정
-
-### 기간 필터링 설정
-```python
-# xbrl_processor.py 내부
-ENABLE_PERIOD_FILTERING = True  # 기간 필터링 활성화/비활성화
-```
-
-### 디버그 모드 설정
-```python
-# XBRLProcessor 클래스 내부
-self.debug_mode = False  # 프로덕션: False, 개발: True
-```
-
-## 📊 사용 예시
-
-### Athena 쿼리 예시
-
-#### 1. 특정 기업의 유형자산 조회
+### 특정 기업 재무상태표 조회
 ```sql
 SELECT
-    yyyy, month, period, fs_type, amount
+    receipt_ymd,
+    period,
+    fs_type,
+    class1,
+    class2,
+    class3,
+    label_ko,
+    amount
 FROM table_dart_report_from_xbrl
 WHERE corp_name = '한솔홀딩스'
     AND report_type = 'BS'
-    AND label_ko = '유형자산'
     AND year = '2025'
     AND mm = '06'
-ORDER BY period, fs_type;
+    AND fs_type = '연결'
+ORDER BY class1, class2, class3;
 ```
 
-#### 2. 재무상태표 주요 항목 비교
+### 업종별 유형자산 비교
 ```sql
 SELECT
-    label_ko,
-    fs_type,
-    amount,
-    period
+    corp_name,
+    amount / 1000000000 as amount_billions
 FROM table_dart_report_from_xbrl
-WHERE corp_code = '00171636'
-    AND report_type = 'BS'
-    AND class1 = '자산총계'
-    AND label_ko IN ('유형자산', '무형자산', '투자자산')
+WHERE report_type = 'BS'
+    AND label_ko = '유형자산'
+    AND fs_type = '연결'
     AND year = '2025'
     AND mm = '06'
-ORDER BY label_ko, fs_type;
+ORDER BY amount DESC
+LIMIT 10;
 ```
 
-## 🐛 트러블슈팅
+## 🔄 변경 이력
 
-### 일반적인 문제들
-
-#### 1. pyarrow 의존성 오류
-```
-Error: Missing optional dependency 'pyarrow'
-```
-**해결**: requirements.txt에 pyarrow 추가 확인
-```bash
-pip install pyarrow>=15.0.0
-```
-
-#### 2. CSV 파싱 오류 (이전 버전)
-```
-Error: 유형자산 데이터가 Athena에서 조회되지 않음
-```
-**해결**: Parquet 포맷 사용으로 해결됨 (현재 버전)
-
-#### 3. XBRL 파일 경로 오류
-```
-Error: XBRL 파일을 찾을 수 없습니다
-```
-**해결**:
-- 파일 경로가 올바른지 확인
-- ZIP 파일인 경우 압축 해제 후 .xbrl 파일 사용
-
-## 🔧 개발자 가이드
-
-### 코드 구조
-
-#### XBRLProcessor 클래스
-```python
-class XBRLProcessor:
-    def __init__(self):
-        # 기업명 매핑 로드 및 초기화
-
-    def extract_financial_data(self, xbrl_path):
-        # XBRL에서 재무제표 데이터 추출
-
-    def convert_to_pivot_format(self, df, metadata):
-        # 다차원 데이터를 2차원 테이블로 변환
-
-    def improve_hierarchy_structure(self, df):
-        # 재무상태표 계층구조 개선
-
-    def save_to_parquet(self, df, output_path):
-        # Parquet 포맷으로 저장
-```
-
-### 확장 가능성
-
-#### 새로운 재무제표 유형 추가
-1. `extract_financial_data()` 메서드에서 추가 재무제표 추출 로직 구현
-2. `convert_to_pivot_format()` 메서드에서 새로운 report_type 처리 추가
-3. 필요시 `improve_hierarchy_structure()` 메서드에서 특화 로직 추가
-
-#### 추가 메타데이터 처리
-1. `extract_metadata_from_xbrl()` 메서드에서 새로운 메타데이터 추출
-2. 출력 스키마에 새로운 컬럼 추가
-3. Glue Crawler 스키마 업데이트
-
-## 📝 변경 이력
+### v3.0.0 (2025-09-26)
+- **[FEATURE]** Corp Map API Lambda 분리 및 마이크로서비스 아키텍처 도입
+- **[FEATURE]** DART_CORP_CODE LPAD 처리로 8자리 표준화
+- **[FEATURE]** 환경변수 우선순위 시스템 (Lambda > .env)
+- **[FEATURE]** receipt_ymd 매핑 시스템으로 접수일자 정확성 개선
+- **[FIX]** Corp Map API 403 Forbidden 오류 해결 (AuthType NONE)
+- **[ENHANCEMENT]** "총계" 제거 로직으로 BS 데이터 품질 향상
 
 ### v2.0.0 (2025-09-22)
-- **[BREAKING]** CSV에서 Parquet 포맷으로 변경
-- **[FIX]** 쉼표가 포함된 텍스트로 인한 파싱 오류 해결
-- **[FEATURE]** 상세한 코드 주석 및 문서화 추가
-- **[FEATURE]** pyarrow 의존성 추가
+- **[BREAKING]** CSV → Parquet 포맷 변경
+- **[FIX]** 쉼표 포함 텍스트 파싱 오류 해결
+- **[FEATURE]** S3 파티션 구조 도입
 
-### v1.0.0 (이전 버전)
-- 기본 XBRL 처리 기능
+### v1.0.0 (초기 버전)
+- 기본 XBRL 크롤링 및 처리 기능
 - CSV 포맷 출력
-- 기간 필터링 기능
-
-## 📄 라이선스
-
-이 프로젝트는 내부 사용을 위한 도구입니다.
-
-## 👥 기여자
-
-- **개발**: XBRL 데이터 분석팀
-- **문서화**: Claude AI Assistant
+- 단일 Lambda 아키텍처
 
 ## 📞 문의
 
-프로젝트 관련 문의사항이 있으시면 개발팀에 연락해주세요.
+시스템 관련 문의사항이나 오류 발생 시:
+1. **CloudWatch 로그** 우선 확인
+2. **환경변수 설정** 검증
+3. **IAM 권한** 확인
+4. **개발팀 문의**
+
+---
+
+**최종 업데이트**: 2025-09-26

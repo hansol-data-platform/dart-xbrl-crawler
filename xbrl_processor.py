@@ -85,6 +85,72 @@ class XBRLProcessor:
         self.corp_name_mapping = self._load_corp_name_mapping()
         self.debug_mode = False  # 프로덕션 환경에서는 디버그 로그 비활성화
 
+        # XBRL 파일명 → rcept_dt 매핑 저장소
+        self.xbrl_rcept_dt_mapping = {}  # {"entity00171636_2025-06-30.xbrl": "20250813"}
+
+    def register_xbrl_rcept_dt(self, xbrl_file_path, rcept_dt):
+        """
+        XBRL 파일과 rcept_dt 매핑 등록
+
+        Args:
+            xbrl_file_path (str): XBRL 파일 경로
+            rcept_dt (str): 접수일자 (YYYYMMDD 형식)
+        """
+        from pathlib import Path
+        xbrl_filename = Path(xbrl_file_path).name
+        if rcept_dt:
+            self.xbrl_rcept_dt_mapping[xbrl_filename] = rcept_dt
+            print(f"[MAPPING] XBRL-rcept_dt 매핑 등록: {xbrl_filename} → {rcept_dt}")
+        else:
+            print(f"[MAPPING] rcept_dt가 비어있어 등록하지 않음: {xbrl_filename}")
+
+    def get_rcept_dt_by_xbrl_path(self, xbrl_file_path):
+        """
+        XBRL 파일 경로로 rcept_dt 조회
+
+        Args:
+            xbrl_file_path (str): XBRL 파일 경로
+
+        Returns:
+            str: 접수일자 (YYYYMMDD 형식) 또는 빈 문자열
+        """
+        from pathlib import Path
+
+        print(f"[DEBUG KEY] 전체 경로: '{xbrl_file_path}'")
+        xbrl_filename = Path(xbrl_file_path).name
+        print(f"[DEBUG KEY] 추출된 파일명: '{xbrl_filename}'")
+
+        rcept_dt = self.xbrl_rcept_dt_mapping.get(xbrl_filename, '')
+
+        if rcept_dt:
+            print(f"[MAPPING] XBRL-rcept_dt 매핑 조회 성공: {xbrl_filename} → {rcept_dt}")
+        else:
+            print(f"[MAPPING] XBRL-rcept_dt 매핑 없음: {xbrl_filename}")
+
+            # 디버깅: 매핑 딕셔너리 내용 확인
+            if len(self.xbrl_rcept_dt_mapping) > 0:
+                print(f"[DEBUG MAPPING] 현재 매핑 딕셔너리에 있는 키들 ({len(self.xbrl_rcept_dt_mapping)}개):")
+                for i, (key, value) in enumerate(list(self.xbrl_rcept_dt_mapping.items())[:5]):
+                    print(f"  [{i+1}] '{key}' → '{value}'")
+                print(f"[DEBUG KEY] 조회 시도한 키: '{xbrl_filename}'")
+
+                # 키 길이 및 문자 비교
+                if self.xbrl_rcept_dt_mapping:
+                    first_key = list(self.xbrl_rcept_dt_mapping.keys())[0]
+                    print(f"[DEBUG KEY] 첫 번째 키 길이: {len(first_key)}")
+                    print(f"[DEBUG KEY] 조회 키 길이: {len(xbrl_filename)}")
+
+                # 부분 매칭 시도
+                matching_keys = [k for k in self.xbrl_rcept_dt_mapping.keys() if xbrl_filename in k or k in xbrl_filename]
+                if matching_keys:
+                    print(f"[DEBUG KEY] 부분 매칭되는 키들: {matching_keys}")
+                else:
+                    print(f"[DEBUG KEY] 부분 매칭되는 키 없음")
+            else:
+                print(f"[DEBUG MAPPING] 매핑 딕셔너리가 비어있음")
+
+        return rcept_dt
+
     def _check_ppe_existence(self, df, step_name):
         """
         유형자산 항목의 존재 여부를 체크하는 디버그 함수
@@ -165,7 +231,7 @@ class XBRLProcessor:
                 print(f"경고: {corp_list_path} 로드 실패: {e}")
                 continue
 
-        print(f"✗ 경고: 모든 경로에서 corp_list.json을 찾을 수 없습니다.")
+        print(f"경고: 모든 경로에서 corp_list.json을 찾을 수 없습니다.")
         print(f"  시도한 경로: {possible_paths}")
         return {}
 
@@ -717,7 +783,7 @@ class XBRLProcessor:
             month = metadata.get('month', '00')
             return f"FS_{corp_code}_{yyyy}{month}.parquet"
 
-    def save_to_parquet(self, df, output_path):
+    def save_to_parquet(self, df, output_path, receipt_ymd=None, xbrl_file_path=None):
         """DataFrame을 Parquet 포맷으로 저장 (crawl_time 컬럼 추가)"""
         if df.empty:
             print("저장할 데이터가 없습니다.")
@@ -727,6 +793,170 @@ class XBRLProcessor:
             # crawl_time 컬럼 추가 (현재 시간)
             df_copy = df.copy()
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # =========================================================================
+            # 파케이 저장 직전 데이터 전처리
+            # =========================================================================
+
+            # 1. 컬럼 이름 변경
+            if 'label_ko' in df_copy.columns:
+                df_copy = df_copy.rename(columns={'label_ko': 'account_name'})
+            if 'label_en' in df_copy.columns:
+                df_copy = df_copy.rename(columns={'label_en': 'account_name_en'})
+            if 'concept_id' in df_copy.columns:
+                df_copy = df_copy.rename(columns={'concept_id': 'account_id'})
+
+            # 1-1. BS(재무상태표) 데이터의 총계 항목 정리
+            if 'report_type' in df_copy.columns and 'account_name' in df_copy.columns and 'class1' in df_copy.columns:
+                bs_mask = (df_copy['report_type'] == 'BS')
+
+                if bs_mask.any():
+                    print(f"[BS 정리] 재무상태표 총계 항목 정리 시작 ({bs_mask.sum()}행)")
+
+                    # account_name에서 '총계' 제거: 자산총계 → 자산, 부채총계 → 부채, 자본총계 → 자본
+                    bs_data = df_copy[bs_mask].copy()
+                    original_account_names = bs_data['account_name'].unique()
+
+                    # 총계 항목 매핑
+                    total_mapping = {
+                        '자산총계': '자산',
+                        '부채총계': '부채',
+                        '자본총계': '자본'
+                    }
+
+                    # account_name 변경
+                    for original, new in total_mapping.items():
+                        mask = bs_mask & (df_copy['account_name'] == original)
+                        if mask.any():
+                            df_copy.loc[mask, 'account_name'] = new
+                            print(f"[BS 정리] account_name: {original} → {new} ({mask.sum()}행)")
+
+                    # class1 변경 (account_name과 동일하게)
+                    for original, new in total_mapping.items():
+                        mask = bs_mask & (df_copy['class1'] == original)
+                        if mask.any():
+                            df_copy.loc[mask, 'class1'] = new
+                            print(f"[BS 정리] class1: {original} → {new} ({mask.sum()}행)")
+
+            # 2. 신규 컬럼 추가
+            # report_name 컬럼 추가
+            if 'report_type' in df_copy.columns:
+                df_copy['report_name'] = df_copy['report_type'].map({
+                    'BS': '재무상태표',
+                    'CIS': '포괄손익계산서'
+                })
+            else:
+                df_copy['report_name'] = ''
+
+            # receipt_ymd 컬럼 추가 (보고서 접수일자)
+            print(f"[DEBUG] save_to_parquet - receipt_ymd 매개변수: '{receipt_ymd}'")
+            print(f"[DEBUG] save_to_parquet - xbrl_file_path 매개변수: '{xbrl_file_path}'")
+
+            # 날짜 형식 변환 및 대안 처리
+            formatted_receipt_ymd = ''
+            final_rcept_dt = receipt_ymd
+
+            # 1차: 매개변수로 받은 receipt_ymd 확인
+            if receipt_ymd and str(receipt_ymd) not in ['None', 'null', ''] and len(str(receipt_ymd)) == 8 and str(receipt_ymd).isdigit():
+                final_rcept_dt = str(receipt_ymd)
+                print(f"[DEBUG] 매개변수에서 유효한 receipt_ymd 발견: {final_rcept_dt}")
+
+            # 2차: receipt_ymd가 비어있거나 None이면 매핑에서 조회
+            elif (not receipt_ymd or str(receipt_ymd) in ['None', 'null', '']) and xbrl_file_path:
+                mapped_rcept_dt = self.get_rcept_dt_by_xbrl_path(xbrl_file_path)
+                if mapped_rcept_dt:
+                    final_rcept_dt = mapped_rcept_dt
+                    print(f"[SUCCESS] 매핑에서 rcept_dt 복구: {final_rcept_dt}")
+                else:
+                    print(f"[WARNING] 매핑에서도 rcept_dt를 찾을 수 없음")
+
+            # 3차: 최종적으로 rcept_dt 처리
+            if final_rcept_dt and len(final_rcept_dt) == 8 and final_rcept_dt.isdigit():
+                try:
+                    formatted_receipt_ymd = f"{final_rcept_dt[:4]}-{final_rcept_dt[4:6]}-{final_rcept_dt[6:8]}"
+                    print(f"[DEBUG] rcept_dt 형식 변환: {final_rcept_dt} -> {formatted_receipt_ymd}")
+                except:
+                    formatted_receipt_ymd = final_rcept_dt
+
+            # 4차: 모든 방법이 실패하면 현재 날짜로 대체
+            else:
+                current_date = datetime.now().strftime('%Y-%m-%d')
+                formatted_receipt_ymd = current_date
+                print(f"[WARNING] 모든 방법으로 rcept_dt를 찾을 수 없어 현재 날짜로 대체: {formatted_receipt_ymd}")
+
+            df_copy['receipt_ymd'] = formatted_receipt_ymd
+            print(f"[DEBUG] receipt_ymd 컬럼에 최종 저장된 값: '{formatted_receipt_ymd}'")
+
+            # 3. class ID 매핑 (class1, class2, class3 -> class1_id, class2_id, class3_id)
+            # account_name -> account_id 매핑 딕셔너리 생성
+            name_to_id_mapping = {}
+            for _, row in df_copy.iterrows():
+                if pd.notna(row['account_name']) and row['account_name'] != '':
+                    name_to_id_mapping[row['account_name']] = row['account_id']
+
+            # class1_id 매핑
+            df_copy['class1_id'] = df_copy['class1'].apply(
+                lambda x: name_to_id_mapping.get(x, '') if pd.notna(x) and x != '' else ''
+            )
+
+            # class2_id 매핑
+            df_copy['class2_id'] = df_copy['class2'].apply(
+                lambda x: name_to_id_mapping.get(x, '') if pd.notna(x) and x != '' else ''
+            )
+
+            # class3_id 매핑
+            df_copy['class3_id'] = df_copy['class3'].apply(
+                lambda x: name_to_id_mapping.get(x, '') if pd.notna(x) and x != '' else ''
+            )
+
+            # 4. period 컬럼 값 변경
+            if 'period' in df_copy.columns and 'report_type' in df_copy.columns:
+                # CIS인 경우 period 값 변경
+                cis_mask = df_copy['report_type'] == 'CIS'
+
+                # period에서 날짜 범위 파싱하여 3개월/누적 구분
+                for idx, row in df_copy[cis_mask].iterrows():
+                    period_str = str(row['period'])
+
+                    # YYYY-MM-DD ~ YYYY-MM-DD 형식인 경우
+                    if '~' in period_str:
+                        date_parts = period_str.split('~')
+                        if len(date_parts) == 2:
+                            start_date = date_parts[0].strip()
+                            end_date = date_parts[1].strip()
+
+                            # 날짜를 파싱하여 개월 수 계산
+                            try:
+                                # YYYY-MM-DD 형식에서 년월 추출
+                                start_year = int(start_date.split('-')[0])
+                                start_month = int(start_date.split('-')[1])
+                                end_year = int(end_date.split('-')[0])
+                                end_month = int(end_date.split('-')[1])
+
+                                # 개월 수 계산
+                                month_diff = (end_year - start_year) * 12 + (end_month - start_month) + 1
+
+                                if month_diff <= 3:
+                                    df_copy.at[idx, 'period'] = '3개월'
+                                else:
+                                    df_copy.at[idx, 'period'] = '누적'
+                            except:
+                                # 파싱 실패 시 기본값
+                                df_copy.at[idx, 'period'] = '누적'
+
+                    # YYYY-MM-DD 형식만 있는 경우 (단일 날짜)
+                    elif len(period_str) == 10 and '-' in period_str:
+                        df_copy.at[idx, 'period'] = '3개월'  # 단일 날짜는 보통 분기
+
+                    # 그 외의 경우
+                    else:
+                        df_copy.at[idx, 'period'] = '누적'
+
+                # BS인 경우 period 값을 "당기"로 일괄 변경
+                bs_mask = df_copy['report_type'] == 'BS'
+                df_copy.loc[bs_mask, 'period'] = '당기'
+
+            # crawl_time 추가
             df_copy['crawl_time'] = current_time
 
             # Parquet 저장
@@ -871,6 +1101,7 @@ class XBRLProcessor:
         if not os.path.exists(xbrl_path):
             raise FileNotFoundError(f"XBRL 파일을 찾을 수 없습니다: {xbrl_path}")
 
+        print("[CRITICAL DEBUG] process_xbrl_file (report_info 없는 버전) 호출됨!")
         print(f"=== XBRL 파일 처리 시작 ===")
         print(f"입력 파일: {xbrl_path}")
 
@@ -923,7 +1154,7 @@ class XBRLProcessor:
             print(f"  - BS 데이터: {len(combined_df[combined_df['report_type'] == 'BS'])}행")
             print(f"  - CIS 데이터: {len(combined_df[combined_df['report_type'] == 'CIS'])}행")
 
-            if self.save_to_parquet(combined_df, output_file):
+            if self.save_to_parquet(combined_df, output_file, receipt_ymd=None, xbrl_file_path=xbrl_path):
                 generated_files.append(output_file)
         else:
             print("저장할 재무제표 데이터가 없습니다.")
@@ -938,21 +1169,32 @@ class XBRLProcessor:
 
         return generated_files
 
-    def process_xbrl_file_with_report_info(self, xbrl_path, report_nm=""):
+    def process_xbrl_file_with_report_info(self, xbrl_path, report_nm="", receipt_ymd=None):
         """
         XBRL 파일을 처리하여 최종 CSV 파일들을 생성 (보고서 정보 포함)
 
         Args:
             xbrl_path (str): XBRL 파일 경로
             report_nm (str): 보고서명 (예: "반기보고서 (2025.06)")
+            receipt_ymd (str): 보고서 접수일자 (예: "2025-06-30")
 
         Returns:
             list: 생성된 파일 경로들
         """
         print("=== XBRL 파일 처리 시작 ===")
+        print(f"[CRITICAL DEBUG] 메서드 진입점 확인!")
         print(f"입력 파일: {xbrl_path}")
-        if report_nm:
-            print(f"보고서명: {report_nm}")
+        print(f"보고서명: {report_nm}")
+        print(f"[CRITICAL DEBUG] receipt_ymd 매개변수 원시값: '{receipt_ymd}' (타입: {type(receipt_ymd)})")
+        import traceback
+        print(f"[CRITICAL DEBUG] 호출 스택:\n{traceback.format_stack()[-3:-1]}")
+
+        # rcept_dt 매핑 등록 (receipt_ymd가 YYYYMMDD 형태로 들어옴)
+        if receipt_ymd and str(receipt_ymd) not in ['None', 'null', '']:
+            self.register_xbrl_rcept_dt(xbrl_path, str(receipt_ymd))
+            print(f"[MAPPING] 매핑 등록 완료: {Path(xbrl_path).name} -> {receipt_ymd}")
+        else:
+            print(f"[MAPPING] 매핑 등록 실패: receipt_ymd가 유효하지 않음 ('{receipt_ymd}')")
 
         generated_files = []
 
@@ -1030,7 +1272,7 @@ class XBRLProcessor:
                 print(f"  - BS 데이터: {len(combined_df[combined_df['report_type'] == 'BS'])}행")
                 print(f"  - CIS 데이터: {len(combined_df[combined_df['report_type'] == 'CIS'])}행")
 
-                if self.save_to_parquet(combined_df, output_file):
+                if self.save_to_parquet(combined_df, output_file, receipt_ymd=receipt_ymd, xbrl_file_path=xbrl_path):
                     generated_files.append(output_file)
             else:
                 print("저장할 재무제표 데이터가 없습니다.")

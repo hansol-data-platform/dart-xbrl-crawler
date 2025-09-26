@@ -13,11 +13,16 @@ RUN yum update -y && \
     yum clean all
 
 # Python 패키지 설치
-COPY requirements_lambda_py313.txt ${LAMBDA_TASK_ROOT}/requirements.txt
+COPY requirements.txt ${LAMBDA_TASK_ROOT}/requirements.txt
 
-# pip 업그레이드 및 패키지 설치 (pyarrow는 바이너리 우선)
-RUN pip install --upgrade pip && \
-    pip install --prefer-binary --no-cache-dir -r requirements.txt
+# pip 업그레이드 및 패키지 설치 (단계별로 나누어 디버깅)
+RUN pip install --upgrade pip
+
+# 디버깅: requirements.txt 내용 확인
+RUN echo "=== Requirements.txt 내용 ===" && cat requirements.txt
+
+# 패키지 설치 (더 안전한 옵션)
+RUN pip install --prefer-binary --no-cache-dir -r requirements.txt
 
 # Lambda 함수 코드 복사
 COPY lambda_function.py ${LAMBDA_TASK_ROOT}
@@ -25,6 +30,9 @@ COPY dart_api_manager.py ${LAMBDA_TASK_ROOT}
 COPY s3_uploader.py ${LAMBDA_TASK_ROOT}
 COPY xbrl_processor.py ${LAMBDA_TASK_ROOT}
 COPY xbrl_batch_processor.py ${LAMBDA_TASK_ROOT}
+COPY athena_corp_loader.py ${LAMBDA_TASK_ROOT}
+
+# 임시 Fallback용 JSON 파일 추가
 COPY corp_list.json ${LAMBDA_TASK_ROOT}
 
 # Lambda 핸들러 설정

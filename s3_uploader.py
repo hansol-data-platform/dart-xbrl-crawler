@@ -22,8 +22,12 @@ import re
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 
-# 환경 변수 로드
-load_dotenv()
+# 환경변수 로드 (Lambda 환경변수 우선, .env 파일 fallback)
+try:
+    load_dotenv()
+    print("[S3Uploader ENV] .env 파일 로드 성공")
+except Exception as e:
+    print(f"[S3Uploader ENV] .env 파일 로드 실패 (Lambda 환경에서는 정상): {e}")
 
 
 class S3Uploader:
@@ -433,6 +437,30 @@ class S3Uploader:
         self.generate_partition_upload_report(uploaded_files)
 
         return self.stats
+
+    def generate_partition_upload_report(self, uploaded_files: List[Dict]):
+        """파티션 업로드 결과 보고서 생성"""
+        try:
+            print(f"\n=== 파티션 업로드 완료 ===")
+            print(f"총 업로드된 파일: {len(uploaded_files)}개")
+
+            if uploaded_files:
+                print("\n업로드된 파일 목록:")
+                for i, file_info in enumerate(uploaded_files, 1):
+                    print(f"  {i}. {file_info.get('file_name', 'Unknown')}")
+                    print(f"     S3 Key: {file_info.get('s3_key', 'Unknown')}")
+                    print(f"     크기: {file_info.get('size', 0):,} bytes")
+
+            # 통계 업데이트
+            if hasattr(self, 'stats'):
+                self.stats['uploaded_files'] = len(uploaded_files)
+                self.stats['partition_upload_completed'] = True
+
+            print(f"\n파티션 업로드 보고서 생성 완료")
+
+        except Exception as e:
+            print(f"파티션 업로드 보고서 생성 중 오류: {e}")
+            # 오류가 발생해도 전체 프로세스는 계속 진행
 
     def upload_parquet_files(self, parquet_files: List[str]) -> Dict:
         """

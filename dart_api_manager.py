@@ -46,30 +46,155 @@ class DARTAPIManager:
         self.min_interval = 0.06  # 60초 / 1000회 = 0.06초
 
     def load_environment(self):
-        """환경변수 로드"""
-        load_dotenv()
+        """
+        환경변수 로드 (Lambda 환경변수 우선, .env 파일 fallback)
+        """
+        # Lambda 환경에서는 .env 파일이 없을 수 있으므로 try-catch 사용
+        try:
+            load_dotenv()
+            print("[ENV] .env 파일 로드 성공")
+        except Exception as e:
+            print(f"[ENV] .env 파일 로드 실패 (Lambda 환경에서는 정상): {e}")
+
+        # DART API 키 로드 (Lambda 환경변수 > .env 파일)
         self.dart_api_key = os.getenv('DART_API_KEY')
         if not self.dart_api_key:
-            raise ValueError("DART_API_KEY가 .env 파일에 설정되지 않았습니다.")
-        print(f"DART API 키 로드 완료: {self.dart_api_key[:10]}...")
+            raise ValueError("DART_API_KEY가 Lambda 환경변수 또는 .env 파일에 설정되지 않았습니다.")
+
+        # 환경변수 소스 확인 (디버깅용)
+        env_source = "Lambda 환경변수" if not os.path.exists('.env') else "Lambda 환경변수 또는 .env 파일"
+        print(f"[ENV] DART API 키 로드 완료: {self.dart_api_key[:10]}... (소스: {env_source})")
+
+        # 주요 환경변수들 확인 및 출력
+        self._print_environment_variables()
 
     def load_corp_list(self, filename='corp_list.json'):
-        """corp_list.json 파일 로드"""
-        try:
-            # Lambda 환경에서는 절대 경로 사용
-            if not os.path.isabs(filename):
-                # 현재 스크립트 디렉토리 기준으로 파일 경로 설정
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                filename = os.path.join(current_dir, filename)
+        """
+        회사 목록 로드
 
-            with open(filename, 'r', encoding='utf-8') as f:
-                corp_list = json.load(f)
-            print(f"회사 목록 로드 완료: {len(corp_list)}개 회사")
-            return corp_list
-        except FileNotFoundError:
-            raise FileNotFoundError(f"{filename} 파일을 찾을 수 없습니다.")
-        except json.JSONDecodeError:
-            raise ValueError(f"{filename} 파일 형식이 올바르지 않습니다.")
+        환경변수 CORP_LIST_SOURCE에 따라:
+        - 'api': Corp Map API Lambda 호출
+        - 'json': 기존 JSON 파일 사용 (기본값)
+        """
+        # 환경변수로 소스 선택
+        source = os.getenv('CORP_LIST_SOURCE', 'json').lower()
+
+        if source == 'api':
+            try:
+                print("[DARTAPIManager] Corp Map API에서 회사 목록 로드 시도...")
+                corp_list = self._load_from_corp_map_api()
+
+                if corp_list:
+                    print(f"[DARTAPIManager] Corp Map API에서 회사 목록 로드 성공: {len(corp_list)}개 회사")
+                    return corp_list
+                else:
+                    print("[DARTAPIManager] Corp Map API 로드 실패, JSON 파일로 fallback")
+                    source = 'json'  # fallback
+
+            except Exception as e:
+                print(f"[DARTAPIManager] Corp Map API 로드 중 오류: {e}")
+                source = 'json'  # fallback
+
+        # JSON 파일에서 로드 (기본값 또는 fallback)
+        if source == 'json':
+            try:
+                # Lambda 환경에서는 절대 경로 사용
+                if not os.path.isabs(filename):
+                    # 현재 스크립트 디렉토리 기준으로 파일 경로 설정
+                    current_dir = os.path.dirname(os.path.abspath(__file__))
+                    filename = os.path.join(current_dir, filename)
+
+                with open(filename, 'r', encoding='utf-8') as f:
+                    corp_list = json.load(f)
+                print(f"[DARTAPIManager] JSON 파일에서 회사 목록 로드 성공: {len(corp_list)}개 회사")
+                return corp_list
+            except FileNotFoundError:
+                print(f"[DARTAPIManager] {filename} 파일을 찾을 수 없습니다.")
+                return []  # 빈 리스트 반환으로 변경 (graceful failure)
+            except json.JSONDecodeError:
+                print(f"[DARTAPIManager] {filename} 파일 형식이 올바르지 않습니다.")
+                return []  # 빈 리스트 반환으로 변경 (graceful failure)
+
+    def _load_from_corp_map_api(self):
+        """
+        Corp Map API Lambda에서 전체 데이터 조회 후 DART_CORP_CODE 필터링
+
+        Returns:
+            List[Dict]: DART_CORP_CODE가 있는 회사 목록 (기존 형식과 호환)
+        """
+        api_url = os.getenv('CORP_MAP_API_URL')
+        if not api_url:
+            raise ValueError("CORP_MAP_API_URL 환경변수가 설정되지 않았습니다.")
+
+        try:
+            # Corp Map API 호출
+            print(f"[DARTAPIManager] Corp Map API 호출: {api_url}")
+            response = self.session.get(api_url, timeout=30)
+            response.raise_for_status()
+
+            api_data = response.json()
+
+            if not api_data.get('success'):
+                raise Exception(f"Corp Map API 호출 실패: {api_data.get('error', 'Unknown error')}")
+
+            full_corp_data = api_data.get('data', [])
+            print(f"[DARTAPIManager] Corp Map API에서 {len(full_corp_data)}개 회사 데이터 수신")
+
+            # 이 프로젝트에서는 DART_CORP_CODE가 있는 항목만 필터링
+            filtered_corps = []
+            for corp in full_corp_data:
+                dart_corp_code = corp.get('dart_corp_code')
+                dart_corp = corp.get('dart_corp')
+
+                # DART 관련 필드가 있는 경우만 (이 프로젝트용)
+                if dart_corp_code and dart_corp:
+                    # 기존 형식과 호환 (name, corp_code)
+                    filtered_corps.append({
+                        'name': dart_corp,
+                        'corp_code': dart_corp_code,
+                        # 추가 정보도 포함 (필요시 사용)
+                        'stock_code': corp.get('stock_code', ''),
+                        'stock_nm': corp.get('stock_nm', ''),
+                        'listed_yn': corp.get('listed_yn', 'N')
+                    })
+
+            print(f"[DARTAPIManager] 전체 {len(full_corp_data)}개 중 DART_CORP_CODE 있는 회사: {len(filtered_corps)}개")
+            return filtered_corps
+
+        except requests.exceptions.RequestException as e:
+            print(f"[DARTAPIManager] Corp Map API 네트워크 오류: {e}")
+            raise
+        except Exception as e:
+            print(f"[DARTAPIManager] Corp Map API 처리 중 오류: {e}")
+            raise
+
+    def _print_environment_variables(self):
+        """환경변수 로드 상태 확인 및 출력"""
+        env_vars = [
+            'DART_API_KEY',
+            'S3_BUCKET_NAME',
+            'S3_PREFIX',
+            'CORP_LIST_SOURCE',
+            'CORP_MAP_API_URL',
+            'ATHENA_DATABASE',
+            'ATHENA_TABLE',
+            'CORP_CACHE_TTL_HOURS'
+        ]
+
+        print("[ENV] 환경변수 로드 상태:")
+        for var_name in env_vars:
+            value = os.getenv(var_name)
+            if value:
+                # 민감한 정보는 마스킹
+                if 'API_KEY' in var_name:
+                    display_value = f"{value[:10]}..." if len(value) > 10 else value
+                elif 'URL' in var_name and len(value) > 30:
+                    display_value = f"{value[:30]}..."
+                else:
+                    display_value = value
+                print(f"[ENV]   ✅ {var_name}: {display_value}")
+            else:
+                print(f"[ENV]   ❌ {var_name}: 설정되지 않음")
 
     def wait_for_rate_limit(self):
         """API 호출 제한 준수"""
@@ -368,20 +493,27 @@ class DARTAPIManager:
 
             # XBRL 파일 다운로드
             corp_xbrl_files = []
-            for disclosure in xbrl_disclosures[:5]:  # 최대 5개까지만 다운로드
+            for i, disclosure in enumerate(xbrl_disclosures[:5]):  # 최대 5개까지만 다운로드
                 rcept_no = disclosure.get('rcept_no')
                 report_nm = disclosure.get('report_nm', '')
 
                 print(f"  다운로드 중: {report_nm} (접수번호: {rcept_no})")
+                print(f"    [DEBUG] disclosure 전체: {disclosure}")
 
                 xbrl_files = self.download_xbrl_file(rcept_no, corp_name)
                 if xbrl_files:
                     # 각 XBRL 파일에 보고서 정보 추가
                     for xbrl_file in xbrl_files:
+                        # 접수일자 추출 및 디버깅
+                        rcept_dt = disclosure.get('rcept_dt', '')
+                        print(f"    [DEBUG] disclosure.keys(): {list(disclosure.keys())}")
+                        print(f"    [DEBUG] rcept_dt 원시값: '{rcept_dt}' (타입: {type(rcept_dt)})")
+                        print(f"    [DEBUG] 접수일자: {rcept_dt} (report_nm: {report_nm})")
+
                         corp_xbrl_files.append({
                             'file_path': xbrl_file,
                             'report_nm': report_nm,
-                            'rcept_dt': disclosure.get('rcept_dt', ''),
+                            'rcept_dt': rcept_dt,
                             'rcept_no': rcept_no
                         })
 
@@ -390,6 +522,43 @@ class DARTAPIManager:
 
             all_xbrl_files[corp_name] = corp_xbrl_files
             print(f"{corp_name}: 총 {len(corp_xbrl_files)}개 XBRL 파일 다운로드 완료")
+
+        # rcept_dt 매핑 정보를 파일로 저장 (Lambda 환경 고려)
+        try:
+            mapping_file = self.download_dir / "rcept_dt_mapping.json"
+            rcept_mapping = {}
+
+            print(f"[DEBUG PATH] 매핑 파일 저장 경로: {mapping_file}")
+            print(f"[DEBUG PATH] download_dir: {self.download_dir}")
+            print(f"[DEBUG PATH] download_dir 존재 여부: {self.download_dir.exists()}")
+
+            for corp_name, xbrl_files in all_xbrl_files.items():
+                for xbrl_info in xbrl_files:
+                    if isinstance(xbrl_info, dict):
+                        file_path = xbrl_info['file_path']
+                        rcept_dt = xbrl_info.get('rcept_dt', '')
+                        if rcept_dt:
+                            filename = Path(file_path).name
+                            rcept_mapping[filename] = rcept_dt
+                            print(f"[DEBUG MAPPING] {filename} → {rcept_dt}")
+
+            print(f"[DEBUG MAPPING] 저장할 매핑 총 개수: {len(rcept_mapping)}")
+
+            with open(mapping_file, 'w', encoding='utf-8') as f:
+                json.dump(rcept_mapping, f, ensure_ascii=False, indent=2)
+
+            print(f"[MAPPING] rcept_dt 매핑 정보 저장 완료: {len(rcept_mapping)}개 → {mapping_file}")
+
+            # 저장 후 검증
+            if mapping_file.exists():
+                print(f"[DEBUG PATH] 매핑 파일 저장 검증 성공: {mapping_file}")
+            else:
+                print(f"[ERROR PATH] 매핑 파일 저장 실패: {mapping_file}")
+
+        except Exception as e:
+            print(f"[WARNING] rcept_dt 매핑 파일 저장 실패: {e}")
+            import traceback
+            print(f"[ERROR TRACE] {traceback.format_exc()}")
 
         return all_xbrl_files
 
