@@ -129,17 +129,29 @@ def parse_lambda_event(event: Dict) -> Dict:
     Returns:
         dict: 파싱된 실행 파라미터
     """
-    # 기본 파라미터
+    # 기본 파라미터 (환경변수 우선, 없으면 기본값)
+    default_months_back = int(os.getenv('MONTHS_BACK', 6))
+    default_start_ymd = os.getenv('START_YMD', '')  # 환경변수에서 시작일
+    default_end_ymd = os.getenv('END_YMD', '')      # 환경변수에서 종료일
+
     params = {
-        'months_back': 6,  # 기본 6개월
+        'months_back': default_months_back,  # 환경변수 우선, 기본 6개월
+        'start_ymd': default_start_ymd,      # 조회 시작일 (YYYYMMDD)
+        'end_ymd': default_end_ymd,          # 조회 종료일 (YYYYMMDD)
         'upload_s3': True,  # 기본적으로 S3 업로드 활성화
         'corp_codes': None,  # None이면 corp_list.json의 모든 회사
         'test_mode': False   # 테스트 모드 (1개 회사만 처리)
     }
 
-    # 이벤트에서 파라미터 추출
+    # 이벤트에서 파라미터 추출 (이벤트 값이 환경변수보다 우선)
     if 'months_back' in event:
         params['months_back'] = int(event['months_back'])
+
+    if 'start_ymd' in event:
+        params['start_ymd'] = str(event['start_ymd']).strip()
+
+    if 'end_ymd' in event:
+        params['end_ymd'] = str(event['end_ymd']).strip()
 
     if 'upload_s3' in event:
         params['upload_s3'] = bool(event['upload_s3'])
@@ -151,6 +163,12 @@ def parse_lambda_event(event: Dict) -> Dict:
 
     if 'test_mode' in event:
         params['test_mode'] = bool(event['test_mode'])
+
+    # 조회 기간 로그 출력
+    if params['start_ymd'] and params['end_ymd']:
+        logger.info(f"조회 기간: {params['start_ymd']} ~ {params['end_ymd']} (직접 지정)")
+    else:
+        logger.info(f"조회 기간: 최근 {params['months_back']}개월")
 
     logger.info(f"실행 파라미터: {params}")
     return params
@@ -206,7 +224,9 @@ def lambda_handler(event, context):
         logger.info("DART API 다운로드 시작")
         download_stats = processor.download_xbrl_files(
             months_back=params['months_back'],
-            corp_codes=params['corp_codes']
+            corp_codes=params['corp_codes'],
+            start_ymd=params['start_ymd'],
+            end_ymd=params['end_ymd']
         )
 
         if download_stats['files_downloaded'] == 0:

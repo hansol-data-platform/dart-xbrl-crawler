@@ -204,27 +204,39 @@ class DARTAPIManager:
             time.sleep(self.min_interval - elapsed)
         self.last_api_call = time.time()
 
-    def get_recent_disclosures(self, corp_code, months_back=6):
+    def get_recent_disclosures(self, corp_code, months_back=6, start_ymd=None, end_ymd=None):
         """
-        특정 회사의 최근 N개월간 공시 목록 조회
+        특정 회사의 공시 목록 조회
 
         Args:
             corp_code (str): 회사 고유번호
-            months_back (int): 조회 기간 (개월)
+            months_back (int): 조회 기간 (개월) - start_ymd/end_ymd 없을 때 사용
+            start_ymd (str): 조회 시작일 (YYYYMMDD 형식, 예: '20240101')
+            end_ymd (str): 조회 종료일 (YYYYMMDD 형식, 예: '20241231')
 
         Returns:
             list: 공시 목록
         """
-        # 날짜 범위 계산
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=months_back * 30)
+        # 날짜 범위 계산: start_ymd/end_ymd 둘 다 있으면 사용, 아니면 months_back 사용
+        if start_ymd and end_ymd and str(start_ymd).strip() and str(end_ymd).strip():
+            # 직접 지정된 기간 사용 (둘 다 유효한 값일 때만)
+            bgn_de = str(start_ymd).strip()
+            end_de = str(end_ymd).strip()
+            print(f"조회 기간: {bgn_de} ~ {end_de} (직접 지정)")
+        else:
+            # 기존 방식: 오늘 기준 months_back 개월 (start_ymd/end_ymd 중 하나라도 없으면)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=months_back * 30)
+            bgn_de = start_date.strftime('%Y%m%d')
+            end_de = end_date.strftime('%Y%m%d')
+            print(f"조회 기간: {bgn_de} ~ {end_de} (최근 {months_back}개월)")
 
         # API 호출 파라미터
         params = {
             'crtfc_key': self.dart_api_key,
             'corp_code': corp_code,
-            'bgn_de': start_date.strftime('%Y%m%d'),
-            'end_de': end_date.strftime('%Y%m%d'),
+            'bgn_de': bgn_de,
+            'end_de': end_de,
             'page_no': 1,
             'page_count': 100,
             'sort': 'date',
@@ -455,18 +467,23 @@ class DARTAPIManager:
                 os.unlink(temp_zip_path)
             return []
 
-    def download_all_companies_xbrl(self, months_back=6, corp_list_file='corp_list.json'):
+    def download_all_companies_xbrl(self, months_back=6, corp_list_file='corp_list.json', start_ymd=None, end_ymd=None):
         """
-        모든 회사의 최근 N개월간 XBRL 파일 다운로드
+        모든 회사의 XBRL 파일 다운로드
 
         Args:
-            months_back (int): 조회 기간 (개월)
+            months_back (int): 조회 기간 (개월) - start_ymd/end_ymd 없을 때 사용
             corp_list_file (str): 회사 목록 파일명
+            start_ymd (str): 조회 시작일 (YYYYMMDD 형식)
+            end_ymd (str): 조회 종료일 (YYYYMMDD 형식)
 
         Returns:
             dict: 회사별 다운로드된 XBRL 파일 목록
         """
-        print(f"=== 모든 회사의 최근 {months_back}개월간 XBRL 다운로드 시작 ===")
+        if start_ymd and end_ymd:
+            print(f"=== 모든 회사의 {start_ymd} ~ {end_ymd} 기간 XBRL 다운로드 시작 ===")
+        else:
+            print(f"=== 모든 회사의 최근 {months_back}개월간 XBRL 다운로드 시작 ===")
 
         corp_list = self.load_corp_list(corp_list_file)
         all_xbrl_files = {}
@@ -478,7 +495,7 @@ class DARTAPIManager:
             print(f"\n[{i}/{len(corp_list)}] {corp_name} (코드: {corp_code}) 처리 중...")
 
             # 공시 목록 조회
-            disclosures = self.get_recent_disclosures(corp_code, months_back)
+            disclosures = self.get_recent_disclosures(corp_code, months_back, start_ymd, end_ymd)
 
             if not disclosures:
                 print(f"{corp_name}: 공시 정보 없음")

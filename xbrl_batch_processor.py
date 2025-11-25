@@ -440,18 +440,23 @@ class XBRLBatchProcessor:
     # Lambda 핸들러 전용 메서드들
     # =========================================================================
 
-    def download_xbrl_files(self, months_back=6, corp_codes=None):
+    def download_xbrl_files(self, months_back=6, corp_codes=None, start_ymd=None, end_ymd=None):
         """
         Lambda 핸들러용 XBRL 파일 다운로드 메서드
 
         Args:
-            months_back (int): 다운로드할 기간 (개월)
+            months_back (int): 다운로드할 기간 (개월) - start_ymd/end_ymd 없을 때 사용
             corp_codes (list): 특정 회사 코드 목록 (None이면 전체)
+            start_ymd (str): 조회 시작일 (YYYYMMDD 형식)
+            end_ymd (str): 조회 종료일 (YYYYMMDD 형식)
 
         Returns:
             dict: 다운로드 통계
         """
-        print(f"DART API 다운로드 시작 - 최근 {months_back}개월")
+        if start_ymd and end_ymd:
+            print(f"DART API 다운로드 시작 - {start_ymd} ~ {end_ymd} 기간")
+        else:
+            print(f"DART API 다운로드 시작 - 최근 {months_back}개월")
 
         try:
             if corp_codes:
@@ -463,13 +468,13 @@ class XBRLBatchProcessor:
                 for corp in target_corps:
                     corp_name = corp['name']
                     xbrl_files = self.dart_manager.download_single_company_xbrl(
-                        corp['corp_code'], corp_name, months_back
+                        corp['corp_code'], corp_name, months_back, start_ymd, end_ymd
                     )
                     if xbrl_files:
                         all_xbrl_files[corp_name] = xbrl_files
             else:
                 # 전체 회사 다운로드
-                all_xbrl_files = self.dart_manager.download_all_companies_xbrl(months_back)
+                all_xbrl_files = self.dart_manager.download_all_companies_xbrl(months_back, start_ymd=start_ymd, end_ymd=end_ymd)
 
             # 다운로드된 파일 수 계산
             total_files = sum(len(files) for files in all_xbrl_files.values())

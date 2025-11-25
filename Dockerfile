@@ -30,10 +30,6 @@ COPY dart_api_manager.py ${LAMBDA_TASK_ROOT}
 COPY s3_uploader.py ${LAMBDA_TASK_ROOT}
 COPY xbrl_processor.py ${LAMBDA_TASK_ROOT}
 COPY xbrl_batch_processor.py ${LAMBDA_TASK_ROOT}
-COPY athena_corp_loader.py ${LAMBDA_TASK_ROOT}
-
-# 임시 Fallback용 JSON 파일 추가
-COPY corp_list.json ${LAMBDA_TASK_ROOT}
 
 # Lambda 핸들러 설정
 CMD ["lambda_function.lambda_handler"]
